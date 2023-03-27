@@ -1,0 +1,7 @@
+*.bak
+*~
+target/
+*.pth
+*.safetensors
+*tokenizer.json
+Cargo.lock

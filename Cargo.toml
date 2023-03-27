@@ -1,0 +1,13 @@
+[package]
+name = "smolrsrwkv"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+safetensors = { version = "0.3", default-features = false }
+tokenizers = { version = "0.13", default-features = false, features = ["onig"] }
+anyhow = "1"
+mmap-rs = "0.5"
+ndarray = { version = "0.15" }
+half = "2.2"
+rand = "0.8"
