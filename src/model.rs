@@ -1,9 +1,7 @@
 #![allow(clippy::upper_case_acronyms)]
-use ndarray::{Array1, Array2, ArrayView1, Axis, LinalgScalar};
+use ndarray::{Array1, Array2, ArrayView1, Axis};
 
-use crate::util::sigmoid;
-
-pub type Ty = f32;
+use crate::util::{sigmoid, ReqOps};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Mix<T>(pub Array1<T>);
@@ -70,7 +68,7 @@ pub struct RWKVLayerState<T> {
     pub cm_state: Array1<T>,
 }
 
-impl<T: Clone + LinalgScalar> RWKVLayerState<T> {
+impl<T: ReqOps> RWKVLayerState<T> {
     pub fn new(n_embed: usize) -> Self {
         let zs = Array1::zeros(n_embed);
         Self {
@@ -97,18 +95,18 @@ impl<T: Clone + LinalgScalar> RWKVLayerState<T> {
     }
 }
 
-impl Mix<Ty> {
-    pub fn mix(&self, x: &ArrayView1<Ty>, last_x: &ArrayView1<Ty>) -> Array1<Ty> {
-        x * &self.0 + last_x * (1.0 - &self.0)
+impl<T: ReqOps> Mix<T> {
+    pub fn mix(&self, x: &ArrayView1<T>, last_x: &ArrayView1<T>) -> Array1<T> {
+        x * &self.0 + last_x * (T::one() - &self.0)
     }
 }
 
-impl Attention<Ty> {
+impl<T: ReqOps> Attention<T> {
     pub fn time_mixing(
         &self,
-        x: &ArrayView1<Ty>,
-        state: &RWKVLayerState<Ty>,
-    ) -> (Array1<Ty>, (Array1<Ty>, Array1<Ty>)) {
+        x: &ArrayView1<T>,
+        state: &RWKVLayerState<T>,
+    ) -> (Array1<T>, (Array1<T>, Array1<T>)) {
         let last_x = &state.tm_state.view();
         let last_num = &state.tm_num.view();
         let last_den = &state.tm_den.view();
@@ -132,31 +130,33 @@ impl Attention<Ty> {
     }
 }
 
-impl FeedForwardNetwork<Ty> {
-    pub fn channel_mixing(&self, x: &ArrayView1<Ty>, state: &RWKVLayerState<Ty>) -> Array1<Ty> {
+impl<T: ReqOps> FeedForwardNetwork<T> {
+    pub fn channel_mixing(&self, x: &ArrayView1<T>, state: &RWKVLayerState<T>) -> Array1<T> {
         let last_x = &state.cm_state.view();
         let k = self.key_weight.dot(&self.time.mix_k.mix(x, last_x));
         let r = self.receptance_weight.dot(&self.time.mix_r.mix(x, last_x));
-        let vk = self.value_weight.dot(&k.mapv(|val| val.max(0.0).powi(2)));
+        let vk = self
+            .value_weight
+            .dot(&k.mapv(|val| val.max(T::zero()).powi(2)));
         sigmoid(&r) * &vk
     }
 }
 
-impl LayerNorm<Ty> {
-    pub fn norm(&self, x: &ArrayView1<Ty>) -> Array1<Ty> {
+impl<T: ReqOps> LayerNorm<T> {
+    pub fn norm(&self, x: &ArrayView1<T>) -> Array1<T> {
         let mean = x.mean().unwrap();
-        let std = x.std(0.0);
+        let std = x.std(T::zero());
         (x - mean) / std * &self.weight + &self.bias
     }
 }
 
-impl RWKV<Ty> {
+impl<T: ReqOps> RWKV<T> {
     pub fn evaluate_layer(
         &self,
-        mut x: Array1<Ty>,
-        layer: &Layer<Ty>,
-        layer_state: &mut RWKVLayerState<Ty>,
-    ) -> Array1<Ty> {
+        mut x: Array1<T>,
+        layer: &Layer<T>,
+        layer_state: &mut RWKVLayerState<T>,
+    ) -> Array1<T> {
         let x_ln1 = layer.ln[0].norm(&x.view());
         let (dx, (tm_num, tm_den)) = layer.att.time_mixing(&x_ln1.view(), layer_state);
         x += &dx;
@@ -169,7 +169,7 @@ impl RWKV<Ty> {
         x
     }
 
-    pub fn evaluate(&self, token: usize, state: &mut [RWKVLayerState<Ty>]) -> Array1<Ty> {
+    pub fn evaluate(&self, token: usize, state: &mut [RWKVLayerState<T>]) -> Array1<T> {
         let initial_x = self.ln0.norm(&self.emb.index_axis(Axis(0), token));
 
         let x = self
@@ -181,7 +181,7 @@ impl RWKV<Ty> {
             });
 
         let x = self.head.dot(&self.ln_out.norm(&x.view()));
-        let x_max = x.fold(Ty::MIN, |acc, el| acc.max(*el));
+        let x_max = x.fold(T::min_value(), |acc, el| acc.max(*el));
         let e_x = (x - x_max).mapv(|el| el.exp());
 
         &e_x / e_x.sum()

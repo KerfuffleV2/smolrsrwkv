@@ -4,12 +4,15 @@ use anyhow::{anyhow, Result};
 use ndarray::{Array1, ArrayView1};
 use tokenizers::Tokenizer;
 
-use crate::model::{RWKVLayerState, Ty, RWKV};
+use crate::{
+    model::{RWKVLayerState, RWKV},
+    util::ReqOps,
+};
 
 pub struct RWKVContext<T> {
     pub rwkv: RWKV<T>,
     pub state: Vec<RWKVLayerState<T>>,
-    pub last_probs: Array1<Ty>,
+    pub last_probs: Array1<T>,
     pub tokenizer: Tokenizer,
 
     pub n_vocab: usize,
@@ -17,8 +20,8 @@ pub struct RWKVContext<T> {
     pub n_layers: usize,
 }
 
-impl RWKVContext<Ty> {
-    pub fn new(rwkv: RWKV<Ty>, tokenizer: Tokenizer) -> Self {
+impl<T: ReqOps> RWKVContext<T> {
+    pub fn new(rwkv: RWKV<T>, tokenizer: Tokenizer) -> Self {
         let n_embed = rwkv.emb.shape()[1];
         let n_layers = rwkv.layers.len();
         let n_vocab = rwkv.emb.shape()[0];
@@ -58,7 +61,7 @@ impl RWKVContext<Ty> {
 
     pub fn infer_next_token(
         &mut self,
-        mut samplefun: impl FnMut(&ArrayView1<Ty>) -> Result<usize>,
+        mut samplefun: impl FnMut(&ArrayView1<T>) -> Result<usize>,
     ) -> Result<Option<String>> {
         let tokid = samplefun(&self.last_probs.view())?;
         if tokid == 0 {

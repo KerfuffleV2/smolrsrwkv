@@ -1,10 +1,46 @@
+use std::ops::Sub;
+
 use anyhow::{anyhow, Result};
 use mmap_rs::{MmapFlags, MmapOptions};
-use ndarray::{Array1, Array2, ArrayView1};
+use ndarray::{Array1, Array2, ArrayView1, NdFloat, ScalarOperand};
+use num_traits::FromPrimitive;
 use safetensors::tensor::TensorView;
 
-use crate::model::Ty;
+pub trait ReqOps: Sized + Default + Clone
+where
+    Self: NdFloat + ScalarOperand + FromPrimitive,
+    Self: for<'a> Sub<&'a Array1<Self>, Output = Array1<Self>>,
+{
+}
 
+impl ReqOps for f32 {}
+impl ReqOps for f64 {}
+
+pub trait ConvertBF16Tensor: ReqOps {
+    fn tensor_to_array1(tensor: &TensorView<'_>) -> Array1<Self>;
+    fn tensor_to_array2(tensor: &TensorView<'_>) -> Result<Array2<Self>>;
+}
+
+impl ConvertBF16Tensor for f32 {
+    fn tensor_to_array1(tensor: &TensorView<'_>) -> Array1<Self> {
+        Array1::from(bf16_tensor_to_f32(tensor))
+    }
+
+    fn tensor_to_array2(tensor: &TensorView<'_>) -> Result<Array2<Self>> {
+        // Squeeze all the things.
+        let shp = tensor
+            .shape()
+            .iter()
+            .copied()
+            .filter(|i| i != &1)
+            .collect::<Vec<usize>>();
+        anyhow::ensure!(shp.len() == 2, "Bad shape");
+        Ok(Array2::from_shape_vec(
+            (shp[0], shp[1]),
+            bf16_tensor_to_f32(tensor),
+        )?)
+    }
+}
 pub fn mmap_file(s: &str) -> Result<mmap_rs::Mmap> {
     let fp = std::fs::File::open(s)?;
     let flen = fp.metadata()?.len();
@@ -19,8 +55,8 @@ pub fn mmap_file(s: &str) -> Result<mmap_rs::Mmap> {
     }
 }
 
-pub fn sigmoid(x: &Array1<Ty>) -> Array1<Ty> {
-    x.map(|val| 1.0 / (1.0 + (-val).exp()))
+pub fn sigmoid<T: ReqOps>(x: &Array1<T>) -> Array1<T> {
+    x.map(|val| T::one() / (T::one() + (-(*val)).exp()))
 }
 
 fn bf16_tensor_to_f32(tensor: &TensorView<'_>) -> Vec<f32> {
@@ -32,36 +68,22 @@ fn bf16_tensor_to_f32(tensor: &TensorView<'_>) -> Vec<f32> {
         .collect::<Vec<f32>>()
 }
 
-pub fn bf16_tensor_to_array1(tensor: &TensorView<'_>) -> Array1<f32> {
-    Array1::from(bf16_tensor_to_f32(tensor))
-}
-
-pub fn bf16_tensor_to_array2(tensor: &TensorView<'_>) -> Result<Array2<f32>> {
-    // Squeeze all the things.
-    let shp = tensor
-        .shape()
-        .iter()
-        .copied()
-        .filter(|i| i != &1)
-        .collect::<Vec<usize>>();
-    anyhow::ensure!(shp.len() == 2, "Bad shape");
-    Ok(Array2::from_shape_vec(
-        (shp[0], shp[1]),
-        bf16_tensor_to_f32(tensor),
-    )?)
-}
-
-pub fn sample_probs(
+pub fn sample_probs<T>(
     rng: &mut impl rand::Rng,
-    probs: &ArrayView1<Ty>,
+    probs: &ArrayView1<T>,
     temperature: f32,
     top_p: f32,
-) -> usize {
+) -> usize
+where
+    T: ReqOps + num_traits::AsPrimitive<f32> + rand::distributions::uniform::SampleUniform,
+    for<'a> &'a T: rand::distributions::uniform::SampleBorrow<T>,
+{
     use rand::distributions::Distribution;
     let mut sorted_probs = probs.as_slice().unwrap().to_vec();
-    sorted_probs.sort_by(|a, b| Ty::total_cmp(a, b).reverse());
+
+    sorted_probs.sort_by(|a, b| T::partial_cmp(a, b).unwrap().reverse());
     let mut cumulative_probs = Vec::with_capacity(sorted_probs.len());
-    let _ = sorted_probs.iter().fold(0.0, |acc, i| {
+    let _ = sorted_probs.iter().fold(T::zero(), |acc, i| {
         let newcum = acc + *i;
         cumulative_probs.push(newcum);
         newcum
@@ -70,12 +92,13 @@ pub fn sample_probs(
         .iter()
         .copied()
         .enumerate()
-        .find(|(_, v)| *v > top_p)
+        .find(|(_, v)| v.as_() > top_p)
         .map(|i| i.0)
         .unwrap_or_default();
-    let cutoff = sorted_probs[cutoffidx];
+    let cutoff = sorted_probs[cutoffidx].as_();
     let probs = probs.map(|i| {
-        if *i < cutoff {
+        let i: f32 = i.as_();
+        if i < cutoff {
             0.0
         } else {
             i.powf(1.0 / temperature)
