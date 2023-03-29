@@ -1,13 +1,15 @@
-#![allow(clippy::upper_case_acronyms)]
 use std::io::Write;
 
 use anyhow::{anyhow, Result};
-use ndarray::Array1;
+use ndarray::ArrayView1;
+use tokenizers::Tokenizer;
 
+pub mod context;
 pub mod loader;
 pub mod model;
 pub mod util;
 
+use context::RWKVContext;
 use model::*;
 use util::*;
 
@@ -17,38 +19,23 @@ const TOKENIZER: &str = "./20B_tokenizer.json";
 
 fn main() -> Result<()> {
     let mut rng = rand::thread_rng();
-    let tokenizer = tokenizers::Tokenizer::from_file(TOKENIZER).map_err(|e| anyhow!(e))?;
+    let tokenizer = Tokenizer::from_file(TOKENIZER).map_err(|e| anyhow!(e))?;
     let rwkv: RWKV<Ty> = mmap_file(MODEL)?.try_into()?;
-    let n_embed = rwkv.emb.shape()[1];
-    let n_layers = rwkv.layers.len();
+    let mut context = RWKVContext::new(rwkv, tokenizer);
+    let mut samplefun = |probs: &ArrayView1<Ty>| Ok(sample_probs(&mut rng, probs, 1.0, 0.85));
+
     println!(
         "** Loaded: layers={}, embed={:?}",
-        n_layers,
-        rwkv.emb.shape()
+        context.n_layers, context.n_embed
     );
-    let mut state = std::iter::repeat(RWKVLayerState::new(n_embed))
-        .take(n_layers)
-        .collect::<Vec<_>>();
-    let toks = tokenizer.encode(TESTSTR, false).map_err(|e| anyhow!(e))?;
-    let mut probs = Array1::<f32>::zeros(rwkv.emb.shape()[0]);
 
-    toks.get_ids().iter().for_each(|tid| {
-        probs = rwkv.evaluate(*tid as usize, &mut state);
-        let tokstr = tokenizer.decode(vec![*tid], false).unwrap();
-        print!("{}", tokstr);
+    context.feed_prompt(TESTSTR)?;
+
+    while let Some(token) = context.infer_next_token(&mut samplefun)? {
+        print!("{token}");
         std::io::stdout().flush().ok();
-    });
-    loop {
-        let tokid = sample_probs(&mut rng, &probs.view(), 1.0, 0.85);
-        if tokid == 0 {
-            println!(" [end of text]");
-            break;
-        }
-        let tokstr = tokenizer.decode(vec![tokid as u32], false).unwrap();
-        print!("{}", tokstr);
-        std::io::stdout().flush().ok();
-        probs = rwkv.evaluate(tokid, &mut state);
     }
-    println!("Hokay.");
+
+    println!(" [end of text]");
     Ok(())
 }

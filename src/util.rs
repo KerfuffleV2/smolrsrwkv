@@ -82,7 +82,7 @@ pub fn sample_probs(
         }
     });
     let probs = &probs / probs.sum();
-    let dist =
-        rand::distributions::WeightedIndex::new(probs.iter()).expect("I didn't sign up for this!");
+    let dist = rand::distributions::WeightedIndex::new(probs.iter())
+        .expect("I didn't sign up for this! (Bad weight in generated probability list.)");
     dist.sample(rng)
 }
