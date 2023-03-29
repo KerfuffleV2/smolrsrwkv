@@ -1,5 +1,4 @@
 #![allow(clippy::upper_case_acronyms)]
-use std::io::Write;
 
 use anyhow::{anyhow, Result};
 use ndarray::{Array1, ArrayView1};
@@ -39,7 +38,7 @@ impl RWKVContext<Ty> {
             tokenizer,
         }
     }
-    pub fn feed_prompt<S: AsRef<str>>(&mut self, s: S) -> Result<()> {
+    pub fn feed_prompt<S: AsRef<str>>(&mut self, s: S, f: Option<impl Fn(String)>) -> Result<()> {
         let toks = self
             .tokenizer
             .encode(s.as_ref(), false)
@@ -47,9 +46,12 @@ impl RWKVContext<Ty> {
 
         for tid in toks.get_ids().iter() {
             self.last_probs = self.rwkv.evaluate(*tid as usize, &mut self.state);
-            let tokstr = self.tokenizer.decode(vec![*tid], false).unwrap();
-            print!("{}", tokstr);
-            std::io::stdout().flush().ok();
+            if let Some(f) = &f {
+                self.tokenizer
+                    .decode(vec![*tid], false)
+                    .map(f)
+                    .map_err(|e| anyhow!(e))?;
+            }
         }
         Ok(())
     }

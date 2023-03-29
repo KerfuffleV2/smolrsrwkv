@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use mmap_rs::{MmapFlags, MmapOptions};
-use ndarray::prelude::*;
+use ndarray::{Array1, Array2, ArrayView1};
 use safetensors::tensor::TensorView;
 
 use crate::model::Ty;

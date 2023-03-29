@@ -1,5 +1,5 @@
 #![allow(clippy::upper_case_acronyms)]
-use ndarray::{prelude::*, LinalgScalar};
+use ndarray::{Array1, Array2, ArrayView1, Axis, LinalgScalar};
 
 use crate::util::sigmoid;
 
