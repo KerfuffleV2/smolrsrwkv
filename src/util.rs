@@ -2,7 +2,7 @@ use std::ops::Sub;
 
 use anyhow::{anyhow, Result};
 use mmap_rs::{MmapFlags, MmapOptions};
-use ndarray::{Array1, Array2, ArrayView1, NdFloat, ScalarOperand};
+use ndarray::{Array1, Array2, ArrayView1, ArrayView2, NdFloat, ScalarOperand, Zip};
 use num_traits::FromPrimitive;
 use safetensors::tensor::TensorView;
 
@@ -68,17 +68,15 @@ fn bf16_tensor_to_f32(tensor: &TensorView<'_>) -> Vec<f32> {
         .collect::<Vec<f32>>()
 }
 
-pub fn sample_probs<T>(
+pub fn sample_probs<T: ReqOps + num_traits::AsPrimitive<f32>>(
     rng: &mut impl rand::Rng,
     probs: &ArrayView1<T>,
+    forever: bool, // Never select EndOfDocument token.
     temperature: f32,
     top_p: f32,
-) -> usize
-where
-    T: ReqOps + num_traits::AsPrimitive<f32> + rand::distributions::uniform::SampleUniform,
-    for<'a> &'a T: rand::distributions::uniform::SampleBorrow<T>,
-{
-    use rand::distributions::Distribution;
+) -> usize {
+    use rand::distributions::{Distribution, WeightedError, WeightedIndex};
+
     let mut sorted_probs = probs.as_slice().unwrap().to_vec();
 
     sorted_probs.sort_by(|a, b| T::partial_cmp(a, b).unwrap().reverse());
@@ -96,16 +94,48 @@ where
         .map(|i| i.0)
         .unwrap_or_default();
     let cutoff = sorted_probs[cutoffidx].as_();
-    let probs = probs.map(|i| {
+    let mut probs = probs.map(|i| {
         let i: f32 = i.as_();
         if i < cutoff {
             0.0
         } else {
-            i.powf(1.0 / temperature)
+            i
         }
     });
+    if forever {
+        probs[0] = 0.0;
+    }
     let probs = &probs / probs.sum();
-    let dist = rand::distributions::WeightedIndex::new(probs.iter())
-        .expect("I didn't sign up for this! (Bad weight in generated probability list.)");
+    let dist = match WeightedIndex::new(probs.iter().map(|val| val.powf(1.0 / temperature))) {
+        Ok(dist) => dist,
+        Err(WeightedError::AllWeightsZero) => {
+            // Sorry if you wanted tokens forever, but this is how it's got to be.
+            return 0;
+        }
+        e => e.expect("I didn't sign up for this! (Bad weight in generated probability list.)"),
+    };
     dist.sample(rng)
 }
+
+#[allow(dead_code)]
+mod dumdot {
+    use super::{Array1, Array2, ArrayView1, ArrayView2, ReqOps, Zip};
+    use ndarray::{parallel::prelude::*, Axis};
+    pub fn pardotv_simple<T: ReqOps>(lhs: &ArrayView2<T>, rhs: &ArrayView1<T>) -> Array1<T> {
+        Zip::from(lhs.outer_iter()).par_map_collect(|row| row.dot(rhs))
+    }
+
+    // This may or may not be better.
+    pub fn pardotv_chunked<T: ReqOps>(lhs: &ArrayView2<T>, rhs: &ArrayView1<T>) -> Array1<T> {
+        lhs.axis_chunks_iter(Axis(0), 64)
+            .into_par_iter()
+            .flat_map_iter(|x| x.dot(rhs))
+            .collect::<Vec<_>>()
+            .into()
+    }
+
+    pub fn pardot<T: ReqOps>(lhs: &Array2<T>, rhs: &Array1<T>) -> Array1<T> {
+        pardotv_chunked(&lhs.view(), &rhs.view())
+    }
+}
+pub use dumdot::pardot;

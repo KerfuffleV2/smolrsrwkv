@@ -20,3 +20,5 @@ The first step is to convert the `.pth` to SafeTensors format. Look at `pth_to_s
 
 After that, you should just be able to `cargo run --release`.
 
+**Note**: The default is to use all logical cores. If you don't want that, set the `RAYON_NUM_THREADS` environment variable.
+

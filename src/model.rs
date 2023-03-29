@@ -1,7 +1,7 @@
 #![allow(clippy::upper_case_acronyms)]
 use ndarray::{Array1, Array2, ArrayView1, Axis};
 
-use crate::util::{sigmoid, ReqOps};
+use crate::util::{pardot, sigmoid, ReqOps};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Mix<T>(pub Array1<T>);
@@ -111,9 +111,9 @@ impl<T: ReqOps> Attention<T> {
         let last_num = &state.tm_num.view();
         let last_den = &state.tm_den.view();
 
-        let k = self.key_weight.dot(&self.time.mix_k.mix(x, last_x));
-        let v = self.value_weight.dot(&self.time.mix_v.mix(x, last_x));
-        let r = self.receptance_weight.dot(&self.time.mix_r.mix(x, last_x));
+        let k = pardot(&self.key_weight, &self.time.mix_k.mix(x, last_x));
+        let v = pardot(&self.value_weight, &self.time.mix_v.mix(x, last_x));
+        let r = pardot(&self.receptance_weight, &self.time.mix_r.mix(x, last_x));
 
         let exp_k = k.mapv(|el| el.exp());
         let exp_decay = self.time.decay.mapv(|el| (-el.exp()).exp());
@@ -126,18 +126,20 @@ impl<T: ReqOps> Attention<T> {
 
         let num = &exp_decay * last_num + &exp_k * &v;
         let den = &exp_decay * last_den + &exp_k;
-        (self.output_weight.dot(&rwkv), (num, den))
+        (pardot(&self.output_weight, &rwkv), (num, den))
     }
 }
 
 impl<T: ReqOps> FeedForwardNetwork<T> {
     pub fn channel_mixing(&self, x: &ArrayView1<T>, state: &RWKVLayerState<T>) -> Array1<T> {
         let last_x = &state.cm_state.view();
-        let k = self.key_weight.dot(&self.time.mix_k.mix(x, last_x));
-        let r = self.receptance_weight.dot(&self.time.mix_r.mix(x, last_x));
-        let vk = self
-            .value_weight
-            .dot(&k.mapv(|val| val.max(T::zero()).powi(2)));
+        let k = pardot(&self.key_weight, &self.time.mix_k.mix(x, last_x));
+        let r = pardot(&self.receptance_weight, &self.time.mix_r.mix(x, last_x));
+        let vk = pardot(
+            &self.value_weight,
+            &k.mapv(|val| val.max(T::zero()).powi(2)),
+        );
+
         sigmoid(&r) * &vk
     }
 }
@@ -180,7 +182,7 @@ impl<T: ReqOps> RWKV<T> {
                 self.evaluate_layer(x, layer, &mut state[lnum])
             });
 
-        let x = self.head.dot(&self.ln_out.norm(&x.view()));
+        let x = pardot(&self.head, &self.ln_out.norm(&x.view()));
         let x_max = x.fold(T::min_value(), |acc, el| acc.max(*el));
         let e_x = (x - x_max).mapv(|el| el.exp());
 

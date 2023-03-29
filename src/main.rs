@@ -17,6 +17,7 @@ use crate::{
 
 const TESTSTR: &str = "\nIn a shocking finding, scientist discovered a herd of dragons living in a remote, previously unexplored valley, in Tibet. Even more surprising to the researchers was the fact that the dragons spoke perfect Chinese.";
 const MODEL: &str = "./RWKV-4-Pile-430M-20220808-8066.safetensors";
+// const MODEL: &str = "../../models/RWKV-4-Pile-3B-20221110-ctx4096.safetensors";
 const TOKENIZER: &str = "./20B_tokenizer.json";
 type ModelType = f32;
 
@@ -31,7 +32,7 @@ fn main() -> Result<()> {
         std::io::stdout().flush().ok();
     };
     let mut do_sample =
-        |probs: &ArrayView1<ModelType>| Ok(sample_probs(&mut rng, probs, 1.0, 0.85));
+        |probs: &ArrayView1<ModelType>| Ok(sample_probs(&mut rng, probs, true, 1.0, 0.85));
 
     println!(
         "** Loaded: layers={}, embed={:?}",
