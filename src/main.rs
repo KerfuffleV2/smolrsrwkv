@@ -4,10 +4,12 @@ use std::io::Write;
 use anyhow::{anyhow, Result};
 use ndarray::Array1;
 
-pub mod util;
-use util::*;
+pub mod loader;
 pub mod model;
+pub mod util;
+
 use model::*;
+use util::*;
 
 const TESTSTR: &str = "\nIn a shocking finding, scientist discovered a herd of dragons living in a remote, previously unexplored valley, in Tibet. Even more surprising to the researchers was the fact that the dragons spoke perfect Chinese.";
 const MODEL: &str = "./RWKV-4-Pile-430M-20220808-8066.safetensors";
@@ -16,7 +18,7 @@ const TOKENIZER: &str = "./20B_tokenizer.json";
 fn main() -> Result<()> {
     let mut rng = rand::thread_rng();
     let tokenizer = tokenizers::Tokenizer::from_file(TOKENIZER).map_err(|e| anyhow!(e))?;
-    let rwkv = load_rwkv(mmap_file(MODEL)?)?;
+    let rwkv: RWKV<Ty> = mmap_file(MODEL)?.try_into()?;
     let n_embed = rwkv.emb.shape()[1];
     let n_layers = rwkv.layers.len();
     println!(

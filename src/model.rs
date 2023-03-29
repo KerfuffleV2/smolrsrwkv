@@ -1,11 +1,7 @@
 #![allow(clippy::upper_case_acronyms)]
-use std::collections::HashMap;
-
-use anyhow::{anyhow, Result};
 use ndarray::{prelude::*, LinalgScalar};
-use safetensors::{tensor::TensorView, SafeTensors};
 
-use crate::util::{bf16_tensor_to_array1, bf16_tensor_to_array2, sigmoid};
+use crate::util::sigmoid;
 
 pub type Ty = f32;
 
@@ -154,122 +150,40 @@ impl LayerNorm<Ty> {
     }
 }
 
-impl LayerNorm<f32> {
-    fn from_layermap(lm: &HashMap<String, TensorView>, idx: usize) -> Result<Self> {
-        Ok(Self {
-            bias: bf16_tensor_to_array1(
-                lm.get(&format!("ln{idx}.bias"))
-                    .ok_or_else(|| anyhow!("Bad format"))?,
-            ),
-            weight: bf16_tensor_to_array1(
-                lm.get(&format!("ln{idx}.weight"))
-                    .ok_or_else(|| anyhow!("Bad format"))?,
-            ),
-        })
+impl RWKV<Ty> {
+    pub fn evaluate_layer(
+        &self,
+        mut x: Array1<Ty>,
+        layer: &Layer<Ty>,
+        layer_state: &mut RWKVLayerState<Ty>,
+    ) -> Array1<Ty> {
+        let x_ln1 = layer.ln[0].norm(&x.view());
+        let (dx, (tm_num, tm_den)) = layer.att.time_mixing(&x_ln1.view(), layer_state);
+        x += &dx;
+
+        let x_ln2 = layer.ln[1].norm(&x.view());
+        let dx = layer.ffn.channel_mixing(&x_ln2.view(), layer_state);
+        x += &dx;
+
+        layer_state.update(x_ln1, tm_num, tm_den, x_ln2);
+        x
     }
-}
 
-impl RWKV<f32> {
-    pub fn evaluate(&self, token: usize, state: &mut [RWKVLayerState<f32>]) -> Array1<f32> {
-        let x = self.emb.index_axis(Axis(0), token);
-        let mut x = self.ln0.norm(&x);
+    pub fn evaluate(&self, token: usize, state: &mut [RWKVLayerState<Ty>]) -> Array1<Ty> {
+        let initial_x = self.ln0.norm(&self.emb.index_axis(Axis(0), token));
 
-        for (lnum, layer) in self.layers.iter().enumerate() {
-            let layer_state = &mut state[lnum];
-            let x_ln1 = layer.ln[0].norm(&x.view());
-            let (dx, (tm_num, tm_den)) = layer.att.time_mixing(&x_ln1.view(), layer_state);
-            x += &dx;
+        let x = self
+            .layers
+            .iter()
+            .enumerate()
+            .fold(initial_x, |x, (lnum, layer)| {
+                self.evaluate_layer(x, layer, &mut state[lnum])
+            });
 
-            let x_ln2 = layer.ln[1].norm(&x.view());
-            let dx = layer.ffn.channel_mixing(&x_ln2.view(), layer_state);
-            x += &dx;
-
-            layer_state.update(x_ln1, tm_num, tm_den, x_ln2);
-        }
-        let x = self.ln_out.norm(&x.view());
-        let x = self.head.dot(&x);
+        let x = self.head.dot(&self.ln_out.norm(&x.view()));
         let x_max = x.fold(Ty::MIN, |acc, el| acc.max(*el));
-
         let e_x = (x - x_max).mapv(|el| el.exp());
+
         &e_x / e_x.sum()
-    }
-
-    pub fn from_safetensors(tensors: &SafeTensors) -> Result<Self> {
-        let mut n_layers = 0;
-        let tm = tensors.tensors().into_iter().try_fold(
-            HashMap::<Option<u32>, HashMap<String, TensorView>>::new(),
-            |mut tm, (mut name, tensor)| {
-                let (layer_num, ktv) = if let Some(rest) = name.strip_prefix("blocks.") {
-                    let result = rest.split_once('.').ok_or_else(|| anyhow!("Bad format"))?;
-                    let lnum = result.0.parse()?;
-                    n_layers = n_layers.max(lnum + 1);
-                    name = result.1.to_string();
-                    (Some(lnum), tensor)
-                } else {
-                    (None, tensor)
-                };
-
-                tm.entry(layer_num)
-                    .or_insert_with(Default::default)
-                    .insert(name, ktv);
-                Result::<_, anyhow::Error>::Ok(tm)
-            },
-        )?;
-        anyhow::ensure!(n_layers > 0, "Not even one measly layer?");
-        fn gk<O>(
-            m: &HashMap<String, TensorView>,
-            k: &str,
-            f: impl Fn(&TensorView) -> O,
-        ) -> Result<O> {
-            m.get(k).map(f).ok_or_else(|| anyhow!("Bad format"))
-        }
-        let layers = (0..n_layers)
-            .map(|lnum| {
-                let lm = tm.get(&Some(lnum)).expect("Impossible layer missing");
-                Result::<_, anyhow::Error>::Ok(Layer {
-                    ln: [
-                        LayerNorm::from_layermap(lm, 1)?,
-                        LayerNorm::from_layermap(lm, 2)?,
-                    ],
-                    att: Attention {
-                        key_weight: gk(lm, "att.key.weight", bf16_tensor_to_array2)??,
-                        value_weight: gk(lm, "att.value.weight", bf16_tensor_to_array2)??,
-                        output_weight: gk(lm, "att.output.weight", bf16_tensor_to_array2)??,
-                        receptance_weight: gk(lm, "att.receptance.weight", bf16_tensor_to_array2)??,
-                        time: AttTime {
-                            first: gk(lm, "att.time_first", bf16_tensor_to_array1)?,
-                            decay: gk(lm, "att.time_decay", bf16_tensor_to_array1)?,
-                            mix_k: Mix(gk(lm, "att.time_mix_k", bf16_tensor_to_array1)?),
-                            mix_v: Mix(gk(lm, "att.time_mix_v", bf16_tensor_to_array1)?),
-                            mix_r: Mix(gk(lm, "att.time_mix_r", bf16_tensor_to_array1)?),
-                        },
-                    },
-                    ffn: FeedForwardNetwork {
-                        key_weight: gk(lm, "ffn.key.weight", bf16_tensor_to_array2)??,
-                        value_weight: gk(lm, "ffn.value.weight", bf16_tensor_to_array2)??,
-                        receptance_weight: gk(lm, "ffn.receptance.weight", bf16_tensor_to_array2)??,
-                        time: FFNTime {
-                            mix_k: Mix(gk(lm, "ffn.time_mix_k", bf16_tensor_to_array1)?),
-                            mix_r: Mix(gk(lm, "ffn.time_mix_r", bf16_tensor_to_array1)?),
-                        },
-                    },
-                })
-                //
-            })
-            .collect::<Result<Vec<Layer<f32>>, _>>()?;
-        let l0m = tm.get(&Some(0)).unwrap();
-        let nlm = tm
-            .get(&None)
-            .ok_or_else(|| anyhow!("Missing non-layer tensors!"))?;
-        Ok(RWKV {
-            emb: gk(nlm, "emb.weight", bf16_tensor_to_array2)??,
-            head: gk(nlm, "head.weight", bf16_tensor_to_array2)??,
-            ln_out: LayerNorm {
-                bias: gk(nlm, "ln_out.bias", bf16_tensor_to_array1)?,
-                weight: gk(nlm, "ln_out.weight", bf16_tensor_to_array1)?,
-            },
-            ln0: LayerNorm::from_layermap(l0m, 0)?,
-            layers,
-        })
     }
 }
