@@ -67,6 +67,8 @@ pub struct FeedForwardNetwork<T> {
 /// Note though that the array of LayerNorm here corresponds with
 /// blocks.N.ln[12] so array index 0 is ln1.
 pub struct Layer<T> {
+    /// ln[0] (AKA ln1) is used for time mixing,
+    /// ln[1] (AKA ln2) is used for channel mixing.
     pub ln: [LayerNorm<T>; 2],
     pub att: Attention<T>,
     pub ffn: FeedForwardNetwork<T>,
@@ -74,18 +76,27 @@ pub struct Layer<T> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RWKV<T> {
+    /// emb.weight
     pub emb: Array2<T>,
+    /// head.weight
     pub head: Array2<T>,
+    /// ln_out.[weight,bias]
     pub ln_out: LayerNorm<T>,
+    /// This is actually blocks.0.ln0
     pub ln0: LayerNorm<T>,
     pub layers: Vec<Layer<T>>,
 }
 
 #[derive(Clone, PartialEq)]
+/// Each layer has its own independent state.
 pub struct RWKVLayerState<T> {
+    /// State from time mixing.
     pub tm_state: Array1<T>,
+    /// Time mixing numerator?
     pub tm_num: Array1<T>,
+    /// Time mixing denominator?
     pub tm_den: Array1<T>,
+    /// State from channel mixing.
     pub cm_state: Array1<T>,
 }
 
@@ -100,6 +111,7 @@ impl<T: ReqOps> RWKVLayerState<T> {
         }
     }
 
+    /// Updates the state for this layer.
     pub fn update(
         &mut self,
         tm_state: Array1<T>,
@@ -166,6 +178,7 @@ impl<T: ReqOps> FeedForwardNetwork<T> {
 }
 
 impl<T: ReqOps> LayerNorm<T> {
+    /// Normalize a 1D array.
     pub fn norm(&self, x: &ArrayView1<T>) -> Array1<T> {
         let mean = x.mean().unwrap();
         let std = x.std(T::zero());
@@ -174,6 +187,8 @@ impl<T: ReqOps> LayerNorm<T> {
 }
 
 impl<T: ReqOps> RWKV<T> {
+    /// Evaluates a layer. Each layer must be evaluated in sequence,
+    /// serially as they each generate "x" and also require "x" as input.
     pub fn evaluate_layer(
         &self,
         mut x: Array1<T>,
@@ -192,6 +207,7 @@ impl<T: ReqOps> RWKV<T> {
         x
     }
 
+    /// Evaluate all the layers and return a list of probabilities.
     pub fn evaluate(&self, token: usize, state: &mut [RWKVLayerState<T>]) -> Array1<T> {
         let initial_x = self.ln0.norm(&self.emb.index_axis(Axis(0), token));
 
