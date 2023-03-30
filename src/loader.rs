@@ -1,27 +1,39 @@
-use anyhow::{anyhow, Result};
-
+use anyhow::{anyhow, Error, Result};
+use mmap_rs::Mmap;
 use safetensors::{tensor::TensorView, SafeTensors};
+
 use std::collections::HashMap;
 
 use crate::{model::*, util::ConvertBF16Tensor};
 
+/// LayerMap helper type to avoid repetition.
 type LM<'a> = HashMap<String, safetensors::tensor::TensorView<'a>>;
 
+/// Helper function for extracting a tensor from the HashMap by string key.
+/// Takes a closure to convert from the SafeTensors TensorView struct to
+/// a usable format.
 fn gk<O>(m: &LM, k: &str, f: impl Fn(&TensorView) -> O) -> Result<O> {
     m.get(k).map(f).ok_or_else(|| anyhow!("Bad format"))
 }
 
-impl<T: ConvertBF16Tensor> TryFrom<mmap_rs::Mmap> for RWKV<T> {
-    type Error = anyhow::Error;
+/// Convert from a mmap (just a chunk of bytes) to the RWKV<T> struct
+/// Requires the ConvertBF16Tensor trait (from `crate::utils`) due to
+/// tensors being stored in bfloat16 format which isn't suitable for
+/// actual calculation.
+impl<T: ConvertBF16Tensor> TryFrom<Mmap> for RWKV<T> {
+    type Error = Error;
 
-    fn try_from(value: mmap_rs::Mmap) -> std::result::Result<Self, Self::Error> {
+    fn try_from(value: Mmap) -> std::result::Result<Self, Self::Error> {
+        // Note that this actually just reads the metadata and not
+        // the tensor data itself.
         let st = SafeTensors::deserialize(value.as_slice())?;
+        // Use the TryFrom instance to convert from SafeTensors to RWKV<T>.
         (&st).try_into()
     }
 }
 
 impl<T: ConvertBF16Tensor> TryFrom<(usize, &LM<'_>)> for LayerNorm<T> {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_from((idx, lm): (usize, &HashMap<String, TensorView<'_>>)) -> Result<Self> {
         Ok(Self {
@@ -38,7 +50,7 @@ impl<T: ConvertBF16Tensor> TryFrom<(usize, &LM<'_>)> for LayerNorm<T> {
 }
 
 impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for AttTime<T> {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_from(lm: &LM<'_>) -> Result<Self> {
         Ok(AttTime {
@@ -52,7 +64,7 @@ impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for AttTime<T> {
 }
 
 impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for Attention<T> {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_from(lm: &LM<'_>) -> Result<Self> {
         Ok(Attention {
@@ -66,7 +78,7 @@ impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for Attention<T> {
 }
 
 impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for FFNTime<T> {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_from(lm: &LM<'_>) -> Result<Self> {
         Ok(FFNTime {
@@ -77,7 +89,7 @@ impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for FFNTime<T> {
 }
 
 impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for FeedForwardNetwork<T> {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_from(lm: &LM<'_>) -> Result<Self> {
         Ok(FeedForwardNetwork {
@@ -90,10 +102,19 @@ impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for FeedForwardNetwork<T> {
 }
 
 impl<T: ConvertBF16Tensor> TryFrom<&SafeTensors<'_>> for RWKV<T> {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_from(tensors: &SafeTensors<'_>) -> Result<Self> {
         let mut n_layers = 0;
+        // This builds a HashMap of HashMaps.
+        // The top level is None for non-layer tensors like "emb.weight" and
+        // Some(layer_index) for each layer. The second level is just String key to TensorView.
+        //
+        // Worth noting is the fact that the model file gets mmaped but the actual keys/values
+        // could be in any order. This means if you're loading from a spinny disky it could require
+        // seeking all around the file rather than just reading sequentially.
+
+        println!("* Discovering model structure.");
         let tm = tensors.tensors().into_iter().try_fold(
             HashMap::<Option<u32>, HashMap<String, TensorView>>::new(),
             |mut tm, (mut name, tensor)| {
@@ -110,15 +131,16 @@ impl<T: ConvertBF16Tensor> TryFrom<&SafeTensors<'_>> for RWKV<T> {
                 tm.entry(layer_num)
                     .or_insert_with(Default::default)
                     .insert(name, ktv);
-                Result::<_, anyhow::Error>::Ok(tm)
+                Result::<_, Error>::Ok(tm)
             },
         )?;
         anyhow::ensure!(n_layers > 0, "Not even one measly layer?");
 
         let layers = (0..n_layers)
             .map(|lnum| {
+                println!("-   Loading layer {}/{n_layers}", lnum + 1);
                 let lm = tm.get(&Some(lnum)).expect("Impossible layer missing");
-                Result::<_, anyhow::Error>::Ok(Layer {
+                Result::<_, Error>::Ok(Layer {
                     ln: [LayerNorm::try_from((1, lm))?, LayerNorm::try_from((2, lm))?],
                     att: Attention::try_from(lm)?,
                     ffn: FeedForwardNetwork::try_from(lm)?,
@@ -130,6 +152,7 @@ impl<T: ConvertBF16Tensor> TryFrom<&SafeTensors<'_>> for RWKV<T> {
         let nlm = tm
             .get(&None)
             .ok_or_else(|| anyhow!("Missing non-layer tensors!"))?;
+        println!("* Loading non-layer tensors.");
         Ok(RWKV {
             emb: gk(nlm, "emb.weight", T::tensor_to_array2)??,
             head: gk(nlm, "head.weight", T::tensor_to_array2)??,

@@ -9,14 +9,22 @@ use crate::{
     util::ReqOps,
 };
 
+/// Context that holds the state of the RWKV model.
 pub struct RWKVContext<T> {
+    /// The RWKV model data — immutable.
     pub rwkv: RWKV<T>,
+    /// Model state.
     pub state: Vec<RWKVLayerState<T>>,
+    /// Probabilities from the last step (starts filled with zeros).
     pub last_probs: Array1<T>,
+    /// The tokenizer.
     pub tokenizer: Tokenizer,
 
+    /// Number of vocabulary items.
     pub n_vocab: usize,
+    /// Number of embedding items.
     pub n_embed: usize,
+    /// Number of layers in the model.
     pub n_layers: usize,
 }
 
@@ -41,6 +49,11 @@ impl<T: ReqOps> RWKVContext<T> {
             tokenizer,
         }
     }
+
+    /// Feeds some text to the model. A closure can be specified here to allow
+    /// showing progress since it can take a while for large prompts/models.
+    ///
+    /// Evaluating the model generates probabilities, but they're not used here.
     pub fn feed_prompt<S: AsRef<str>>(&mut self, s: S, f: Option<impl Fn(String)>) -> Result<()> {
         let toks = self
             .tokenizer
@@ -59,6 +72,8 @@ impl<T: ReqOps> RWKVContext<T> {
         Ok(())
     }
 
+    /// Infers the next token. Takes a closure that looks at the probabilities
+    /// vector and figures out what token to pick.
     pub fn infer_next_token(
         &mut self,
         mut samplefun: impl FnMut(&ArrayView1<T>) -> Result<usize>,

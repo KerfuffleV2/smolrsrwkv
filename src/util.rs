@@ -6,6 +6,8 @@ use ndarray::{Array1, Array2, ArrayView1, ArrayView2, NdFloat, ScalarOperand, Zi
 use num_traits::FromPrimitive;
 use safetensors::tensor::TensorView;
 
+/// Basically all the math stuff ndarray supports and we need for evaluating
+/// RWKV
 pub trait ReqOps: Sized + Default + Clone
 where
     Self: NdFloat + ScalarOperand + FromPrimitive,
@@ -16,6 +18,9 @@ where
 impl ReqOps for f32 {}
 impl ReqOps for f64 {}
 
+/// Converting bfloat16 format tensors to 1D or 2D arrays of float (only implemented for f32).
+/// You could implement it for f64, but there's no practical reason to do so. Unfortunately,
+/// you can't easily implement it for smaller types (16bit, 8bit, etc).
 pub trait ConvertBF16Tensor: ReqOps {
     fn tensor_to_array1(tensor: &TensorView<'_>) -> Array1<Self>;
     fn tensor_to_array2(tensor: &TensorView<'_>) -> Result<Array2<Self>>;
@@ -41,6 +46,8 @@ impl ConvertBF16Tensor for f32 {
         )?)
     }
 }
+
+/// Helper function for opening a file and mmaping it.
 pub fn mmap_file(s: &str) -> Result<mmap_rs::Mmap> {
     let fp = std::fs::File::open(s)?;
     let flen = fp.metadata()?.len();
@@ -59,6 +66,9 @@ pub fn sigmoid<T: ReqOps>(x: &Array1<T>) -> Array1<T> {
     x.map(|val| T::one() / (T::one() + (-(*val)).exp()))
 }
 
+/// Helper function to convert a SafeTensors TensorView into a flat
+/// vector of f32. The number of dimensions doesn't matter at this
+/// point.
 fn bf16_tensor_to_f32(tensor: &TensorView<'_>) -> Vec<f32> {
     assert_eq!(tensor.dtype(), safetensors::Dtype::BF16);
     tensor
@@ -68,6 +78,8 @@ fn bf16_tensor_to_f32(tensor: &TensorView<'_>) -> Vec<f32> {
         .collect::<Vec<f32>>()
 }
 
+/// Magical stuff I don't understand too well. It takes the list of probabilities
+/// and chooses a reasonable tokenid based on that.
 pub fn sample_probs<T: ReqOps + num_traits::AsPrimitive<f32>>(
     rng: &mut impl rand::Rng,
     probs: &ArrayView1<T>,
@@ -121,11 +133,16 @@ pub fn sample_probs<T: ReqOps + num_traits::AsPrimitive<f32>>(
 mod dumdot {
     use super::{Array1, Array2, ArrayView1, ArrayView2, ReqOps, Zip};
     use ndarray::{parallel::prelude::*, Axis};
+
+    /// The simple implementation of parallel matrix-vector multiplication using Rayon.
+    /// Presumably this calculates every single row separately which could add some overhead.
     pub fn pardotv_simple<T: ReqOps>(lhs: &ArrayView2<T>, rhs: &ArrayView1<T>) -> Array1<T> {
         Zip::from(lhs.outer_iter()).par_map_collect(|row| row.dot(rhs))
     }
 
-    // This may or may not be better.
+    /// Chunked parallel matrix-vector multiplication. However, it requires copying results
+    /// around. Intuitively you might think it's better but just eyeballing the speed of the results
+    /// looks about the same as the other function.
     pub fn pardotv_chunked<T: ReqOps>(lhs: &ArrayView2<T>, rhs: &ArrayView1<T>) -> Array1<T> {
         lhs.axis_chunks_iter(Axis(0), 64)
             .into_par_iter()

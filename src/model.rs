@@ -4,15 +4,25 @@ use ndarray::{Array1, Array2, ArrayView1, Axis};
 use crate::util::{pardot, sigmoid, ReqOps};
 
 #[derive(Debug, Clone, PartialEq)]
+/// Corresponds to:
+/// 1. blocks.N.att.time_mix_[kvr]
+/// 2. blocks.N.ffn.time_mix_[kr]
 pub struct Mix<T>(pub Array1<T>);
 
 #[derive(Debug, Clone, PartialEq)]
+/// Corresponds to:
+/// 1. ln_out.[bias,weight]
+/// 2. blocks.N.ln[012].[bias,weight]
+/// However, note that ln0 only exists in block 0.
 pub struct LayerNorm<T> {
     pub bias: Array1<T>,
     pub weight: Array1<T>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Corresponds to:
+/// 1. blocks.N.time_[first,decay]
+/// 2. blocks.N.time_mix_[kvr]
 pub struct AttTime<T> {
     pub decay: Array1<T>,
     pub mix_k: Mix<T>,
@@ -21,12 +31,17 @@ pub struct AttTime<T> {
     pub first: Array1<T>,
 }
 
+/// Corresponds to:
+/// 1. blocks.N.ffn.time_mix_[kr]
 #[derive(Debug, Clone, PartialEq)]
 pub struct FFNTime<T> {
     pub mix_k: Mix<T>,
     pub mix_r: Mix<T>,
 }
 
+/// Corresponds to:
+/// 1. blocks.N.att.[key,value,output,receptance].weight
+/// 3. Keys described in AttTime.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Attention<T> {
     pub key_weight: Array2<T>,
@@ -36,6 +51,9 @@ pub struct Attention<T> {
     pub time: AttTime<T>,
 }
 
+/// Corresponds to:
+/// 1. blocks.N.ffn.[key,value,receptance].weight
+/// 3. Keys described in FFNTime.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FeedForwardNetwork<T> {
     pub key_weight: Array2<T>,
@@ -45,6 +63,9 @@ pub struct FeedForwardNetwork<T> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// See the comments for Attention, FeedForwardNetwork and LayerNorm.
+/// Note though that the array of LayerNorm here corresponds with
+/// blocks.N.ln[12] so array index 0 is ln1.
 pub struct Layer<T> {
     pub ln: [LayerNorm<T>; 2],
     pub att: Attention<T>,
