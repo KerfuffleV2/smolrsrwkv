@@ -94,10 +94,6 @@ pub fn mmap_file(s: &str) -> Result<mmap_rs::Mmap> {
     }
 }
 
-pub fn sigmoid<T: ReqOps>(x: &Array1<T>) -> Array1<T> {
-    x.map(|val| T::one() / (T::one() + (-(*val)).exp()))
-}
-
 /// Helper function to convert a SafeTensors TensorView into a flat
 /// vector of f32. The number of dimensions doesn't matter at this
 /// point.

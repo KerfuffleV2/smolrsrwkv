@@ -1,8 +1,8 @@
 #![allow(clippy::upper_case_acronyms)]
-use ndarray::{Array1, Array2, ArrayView1, ArrayView2, Axis};
+use ndarray::{Array1, ArrayView1, Axis};
 
+use crate::simple::model::*;
 use crate::{
-    model::*,
     model_traits::*,
     rwkvops::RWKVOps11,
     util::{pardot, ReqOps},
@@ -47,7 +47,7 @@ impl<T: ReqOps> RunMix for Mix<T> {
     }
 }
 
-impl<T: ReqOps> RunAttention<T> for Attention<T, T> {
+impl<T: ReqOps> RunAttention<T> for Attention<T> {
     type State = Array1<T>;
     fn time_mixing<S: HasRWKVLayerState<T, State = Self::State>>(
         &self,
@@ -64,7 +64,7 @@ impl<T: ReqOps> RunAttention<T> for Attention<T, T> {
         let exp_decay = self.time.decay.view();
 
         let wkv = {
-            let e = (&*self.time.first + &k).mapv(|el| el.exp());
+            let e = (&self.time.first + &k).mapv(|el| el.exp());
             (last_num + (&e * &v)) / (last_den + e)
         };
         let rwkv = r.sigmoid() * wkv;
@@ -76,7 +76,7 @@ impl<T: ReqOps> RunAttention<T> for Attention<T, T> {
     }
 }
 
-impl<T: ReqOps> RunFFN<T> for FeedForwardNetwork<T, T> {
+impl<T: ReqOps> RunFFN<T> for FeedForwardNetwork<T> {
     type State = Array1<T>;
     fn channel_mixing<S: HasRWKVLayerState<T, State = Self::State>>(
         &self,
@@ -108,7 +108,7 @@ impl<T: ReqOps> RunLayerNorm for LayerNorm<T> {
     }
 }
 
-impl<T: ReqOps> RunRWKVLayer<T> for RWKVLayer<T, T> {
+impl<T: ReqOps> RunRWKVLayer<T> for RWKVLayer<T> {
     type XTy = Array1<T>;
     type Out = Array1<T>;
 
@@ -117,12 +117,12 @@ impl<T: ReqOps> RunRWKVLayer<T> for RWKVLayer<T, T> {
         x: Self::XTy,
         state: &mut S,
     ) -> Self::Out {
-        let x = self.att.time_mixing(self.ln1.norm(&x), state) + &x;
-        self.ffn.channel_mixing(self.ln2.norm(&x), state) + &x
+        let x = self.att.time_mixing(self.ln_tm.norm(&x), state) + &x;
+        self.ffn.channel_mixing(self.ln_cm.norm(&x), state) + &x
     }
 }
 
-impl<T: ReqOps> RunRWKV<T> for RWKV<T, T> {
+impl<T: ReqOps> RunRWKV<T> for RWKV<T> {
     type Out = Array1<T>;
     type Token = usize;
 

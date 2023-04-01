@@ -5,25 +5,25 @@ use ndarray::{Array1, ArrayView1};
 use tokenizers::Tokenizer;
 
 use crate::{
-    model::{RWKVLayerState, RWKV},
     model_traits::RunRWKV,
+    simple::model::{RWKVLayerState, RWKV},
     util::ReqOps,
 };
 
 /// Context that holds the state of the RWKV model.
-pub struct RWKVContext<WT, AT> {
+pub struct RWKVContext<T> {
     /// The RWKV model data — immutable.
-    pub rwkv: RWKV<WT, AT>,
+    pub rwkv: RWKV<T>,
     /// Model state.
-    pub state: Vec<RWKVLayerState<AT>>,
+    pub state: Vec<RWKVLayerState<T>>,
     /// Probabilities from the last step (starts filled with zeros).
-    pub last_probs: Array1<WT>,
+    pub last_probs: Array1<T>,
     /// The tokenizer.
     pub tokenizer: Tokenizer,
 }
 
-impl<T: ReqOps> RWKVContext<T, T> {
-    pub fn new(rwkv: RWKV<T, T>, tokenizer: Tokenizer) -> Self {
+impl<T: ReqOps> RWKVContext<T> {
+    pub fn new(rwkv: RWKV<T>, tokenizer: Tokenizer) -> Self {
         let initial_state = std::iter::repeat(RWKVLayerState::new(rwkv.n_embed))
             .take(rwkv.n_layers)
             .collect::<Vec<_>>();

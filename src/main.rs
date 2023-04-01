@@ -4,13 +4,18 @@ use anyhow::{anyhow, Result};
 use ndarray::ArrayView1;
 use tokenizers::Tokenizer;
 
+pub mod simple;
+
+// FIXME: Make these comments not garbage.
 /// Context related functions. Holds the model state and and last probabilities vector.
-pub mod context;
+// pub mod context;
 /// Functions related to loading the model from disk.
-pub mod loader;
+// pub mod loader;
 /// The actual model and code related to evaluating it.
-pub mod model;
-pub mod model_impls;
+// pub mod model;
+// pub mod model_impls;
+//
+/// Traits representing the components involved in evaluating RWKV.
 pub mod model_traits;
 pub mod rwkvops;
 /// Utility functions.
@@ -18,8 +23,7 @@ pub mod util;
 // pub mod modelna;
 
 use crate::{
-    context::RWKVContext,
-    model::RWKV,
+    simple::{context::RWKVContext, model::RWKV},
     util::{mmap_file, sample_probs},
 };
 
@@ -51,7 +55,7 @@ fn main() -> Result<()> {
     println!("* Loading tokenizer from: {TOKENIZER}");
     let tokenizer = Tokenizer::from_file(TOKENIZER).map_err(|e| anyhow!(e))?;
     println!("* Loading model from: {MODEL}");
-    let rwkv: RWKV<ModelType, ModelType> = mmap_file(MODEL)?.try_into()?;
+    let rwkv: RWKV<ModelType> = mmap_file(MODEL)?.try_into()?;
     let mut context = RWKVContext::new(rwkv, tokenizer);
 
     // Helper to print out a string without a newline and then flush the console.

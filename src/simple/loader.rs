@@ -9,8 +9,8 @@ use std::{
 };
 
 use crate::{
-    model::*,
     model_traits::RunLayerNorm,
+    simple::model::*,
     util::{Conv2, ConvertBF16Tensor, FloatTensor},
 };
 
@@ -28,7 +28,7 @@ fn gk<O>(m: &LM, k: &str, f: impl Fn(&TensorView) -> O) -> Result<O> {
 /// Requires the ConvertBF16Tensor trait (from `crate::utils`) due to
 /// tensors being stored in bfloat16 format which isn't suitable for
 /// actual calculation.
-impl<T: ConvertBF16Tensor> TryFrom<Mmap> for RWKV<T, T>
+impl<T: ConvertBF16Tensor> TryFrom<Mmap> for RWKV<T>
 where
     FloatTensor<T, Ix1>: Conv2,
 {
@@ -63,7 +63,7 @@ where
     }
 }
 
-impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for AttTime<T, T>
+impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for AttTime<T>
 where
     FloatTensor<T, Ix1>: Conv2,
 {
@@ -71,7 +71,7 @@ where
 
     fn try_from(lm: &LM<'_>) -> Result<Self> {
         Ok(AttTime {
-            first: gk(lm, "att.time_first", FloatTensor::tensor_to)??,
+            first: gk(lm, "att.time_first", T::tensor_to_array1)?,
             // Time decay can be precomputed to simplify inference.
             decay: gk(lm, "att.time_decay", T::tensor_to_array1)?.mapv(|el| (-el.exp()).exp()),
             mix_k: Mix(gk(lm, "att.time_mix_k", T::tensor_to_array1)?),
@@ -81,7 +81,7 @@ where
     }
 }
 
-impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for Attention<T, T>
+impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for Attention<T>
 where
     FloatTensor<T, Ix1>: Conv2,
 {
@@ -109,7 +109,7 @@ impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for FFNTime<T> {
     }
 }
 
-impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for FeedForwardNetwork<T, T> {
+impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for FeedForwardNetwork<T> {
     type Error = Error;
 
     fn try_from(lm: &LM<'_>) -> Result<Self> {
@@ -122,7 +122,7 @@ impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for FeedForwardNetwork<T, T> {
     }
 }
 
-impl<T: ConvertBF16Tensor> TryFrom<&SafeTensors<'_>> for RWKV<T, T>
+impl<T: ConvertBF16Tensor> TryFrom<&SafeTensors<'_>> for RWKV<T>
 where
     FloatTensor<T, Ix1>: Conv2,
 {
@@ -191,8 +191,8 @@ where
                     .get(&Some(lnum as u32))
                     .expect("Impossible layer missing");
                 let result = Result::<_, Error>::Ok(RWKVLayer {
-                    ln1: LayerNorm::try_from((1, lm))?,
-                    ln2: LayerNorm::try_from((2, lm))?,
+                    ln_tm: LayerNorm::try_from((1, lm))?,
+                    ln_cm: LayerNorm::try_from((2, lm))?,
                     att: Attention::try_from(lm)?,
                     ffn: FeedForwardNetwork::try_from(lm)?,
                 });
@@ -202,7 +202,7 @@ where
                 }
                 result
             })
-            .collect::<Result<Vec<RWKVLayer<T, T>>, _>>()?;
+            .collect::<Result<Vec<RWKVLayer<T>>, _>>()?;
 
         println!("\n* Loading non-layer tensors.");
 
