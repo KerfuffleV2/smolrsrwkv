@@ -19,6 +19,11 @@ pub struct LayerNorm<T> {
     pub weight: Array1<T>,
 }
 
+pub struct LayerNorm2<T> {
+    pub bias: Array1<T>,
+    pub weight: Array1<T>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 /// Corresponds to:
 /// 1. blocks.N.time_[first,decay]
@@ -81,8 +86,6 @@ pub struct RWKV<T> {
     pub head: Array2<T>,
     /// ln_out.[weight,bias]
     pub ln_out: LayerNorm<T>,
-    /// This is actually blocks.0.ln0
-    pub ln0: LayerNorm<T>,
     pub layers: Vec<RWKVLayer<T>>,
 }
 

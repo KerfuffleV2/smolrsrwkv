@@ -2,9 +2,10 @@ use anyhow::{anyhow, Error, Result};
 use mmap_rs::Mmap;
 use safetensors::{tensor::TensorView, SafeTensors};
 
+use ndarray::Axis;
 use std::collections::HashMap;
 
-use crate::{model::*, util::ConvertBF16Tensor};
+use crate::{model::*, model_traits::RunLayerNorm, util::ConvertBF16Tensor};
 
 /// LayerMap helper type to avoid repetition.
 type LM<'a> = HashMap<String, safetensors::tensor::TensorView<'a>>;
@@ -55,7 +56,7 @@ impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for AttTime<T> {
     fn try_from(lm: &LM<'_>) -> Result<Self> {
         Ok(AttTime {
             first: gk(lm, "att.time_first", T::tensor_to_array1)?,
-            decay: gk(lm, "att.time_decay", T::tensor_to_array1)?,
+            decay: gk(lm, "att.time_decay", T::tensor_to_array1)?.mapv(|el| (-el.exp()).exp()),
             mix_k: Mix(gk(lm, "att.time_mix_k", T::tensor_to_array1)?),
             mix_v: Mix(gk(lm, "att.time_mix_v", T::tensor_to_array1)?),
             mix_r: Mix(gk(lm, "att.time_mix_r", T::tensor_to_array1)?),
@@ -146,7 +147,6 @@ impl<T: ConvertBF16Tensor> TryFrom<&SafeTensors<'_>> for RWKV<T> {
                     att: Attention::try_from(lm)?,
                     ffn: FeedForwardNetwork::try_from(lm)?,
                 })
-                //
             })
             .collect::<Result<Vec<RWKVLayer<T>>, _>>()?;
         let l0m = tm.get(&Some(0)).unwrap();
@@ -154,14 +154,23 @@ impl<T: ConvertBF16Tensor> TryFrom<&SafeTensors<'_>> for RWKV<T> {
             .get(&None)
             .ok_or_else(|| anyhow!("Missing non-layer tensors!"))?;
         println!("* Loading non-layer tensors.");
+
+        let ln0 = LayerNorm::try_from((0, l0m))?;
+        let mut emb = gk(nlm, "emb.weight", T::tensor_to_array2)??;
+        let n_vocab = emb.shape()[0];
+        (0..n_vocab).for_each(|idx| {
+            let idxemb = emb.index_axis_mut(Axis(0), idx).into_slice().unwrap();
+            let normed = ln0.norm(&idxemb);
+            idxemb.copy_from_slice(normed.as_slice().unwrap());
+        });
+
         Ok(RWKV {
-            emb: gk(nlm, "emb.weight", T::tensor_to_array2)??,
+            emb,
             head: gk(nlm, "head.weight", T::tensor_to_array2)??,
             ln_out: LayerNorm {
                 bias: gk(nlm, "ln_out.bias", T::tensor_to_array1)?,
                 weight: gk(nlm, "ln_out.weight", T::tensor_to_array1)?,
             },
-            ln0: LayerNorm::try_from((0, l0m))?,
             layers,
         })
     }

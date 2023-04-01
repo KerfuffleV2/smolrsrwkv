@@ -1,5 +1,5 @@
 #![allow(clippy::upper_case_acronyms)]
-use ndarray::{Array1, ArrayView1, Axis};
+use ndarray::{Array1, Array2, ArrayView1, ArrayView2, Axis};
 
 use crate::{
     model::*,
@@ -61,7 +61,7 @@ impl<T: ReqOps> RunAttention<T> for Attention<T> {
         let r = pardot(&self.receptance_weight, &self.time.mix_r.mix(&x, last_x));
 
         let exp_k = k.mapv(|el| el.exp());
-        let exp_decay = self.time.decay.mapv(|el| (-el.exp()).exp());
+        let exp_decay = self.time.decay.view();
 
         let wkv = {
             let e = (&self.time.first + &k).mapv(|el| el.exp());
@@ -108,6 +108,18 @@ impl<T: ReqOps> RunLayerNorm for LayerNorm<T> {
     }
 }
 
+impl<T: ReqOps> RunLayerNorm for LayerNorm2<T> {
+    type XTy<'a> = ArrayView2<'a, T>;
+    type Out = Array2<T>;
+    fn norm<'a, X: Into<Self::XTy<'a>>>(&self, x: X) -> Self::Out {
+        let origx = x.into();
+        let x = &origx.view();
+        let mean = x.mean().unwrap();
+        let std = x.std(T::zero());
+        (((x - mean) / std) * &self.weight) + &self.bias
+    }
+}
+
 impl<T: ReqOps> RunRWKVLayer<T> for RWKVLayer<T> {
     type XTy = Array1<T>;
     type Out = Array1<T>;
@@ -131,7 +143,7 @@ impl<T: ReqOps> RunRWKV<T> for RWKV<T> {
         token: Self::Token,
         state: &mut [S],
     ) -> Self::Out {
-        let initial_x = self.ln0.norm(self.emb.index_axis(Axis(0), token));
+        let initial_x = self.emb.index_axis(Axis(0), token).to_owned();
 
         let x = self
             .layers
