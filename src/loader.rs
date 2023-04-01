@@ -56,6 +56,7 @@ impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for AttTime<T> {
     fn try_from(lm: &LM<'_>) -> Result<Self> {
         Ok(AttTime {
             first: gk(lm, "att.time_first", T::tensor_to_array1)?,
+            // Time decay can be precomputed to simplify inference.
             decay: gk(lm, "att.time_decay", T::tensor_to_array1)?.mapv(|el| (-el.exp()).exp()),
             mix_k: Mix(gk(lm, "att.time_mix_k", T::tensor_to_array1)?),
             mix_v: Mix(gk(lm, "att.time_mix_v", T::tensor_to_array1)?),
@@ -155,13 +156,16 @@ impl<T: ConvertBF16Tensor> TryFrom<&SafeTensors<'_>> for RWKV<T> {
             .ok_or_else(|| anyhow!("Missing non-layer tensors!"))?;
         println!("* Loading non-layer tensors.");
 
+        // It's possible to just precompute the embeddings in advance.
         let ln0 = LayerNorm::try_from((0, l0m))?;
         let mut emb = gk(nlm, "emb.weight", T::tensor_to_array2)??;
         let n_vocab = emb.shape()[0];
         (0..n_vocab).for_each(|idx| {
-            let idxemb = emb.index_axis_mut(Axis(0), idx).into_slice().unwrap();
-            let normed = ln0.norm(&idxemb);
-            idxemb.copy_from_slice(normed.as_slice().unwrap());
+            let idxemb = emb
+                .index_axis_mut(Axis(0), idx)
+                .into_slice_memory_order()
+                .expect("Impossible: into_slice_memory_order failed!");
+            idxemb.copy_from_slice(&ln0.norm(&idxemb).into_raw_vec());
         });
 
         Ok(RWKV {
