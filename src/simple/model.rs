@@ -7,7 +7,7 @@ use crate::util::ReqOps;
 /// Corresponds to:
 /// 1. blocks.N.att.time_mix_[kvr]
 /// 2. blocks.N.ffn.time_mix_[kr]
-pub struct Mix<WT>(pub Array1<WT>);
+pub struct Mix<T>(pub Array1<T>);
 
 #[derive(Debug, Clone, PartialEq)]
 /// Corresponds to:

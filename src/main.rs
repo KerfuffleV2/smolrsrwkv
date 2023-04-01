@@ -4,6 +4,7 @@ use anyhow::{anyhow, Result};
 use ndarray::ArrayView1;
 use tokenizers::Tokenizer;
 
+pub mod quantized;
 pub mod simple;
 
 // FIXME: Make these comments not garbage.

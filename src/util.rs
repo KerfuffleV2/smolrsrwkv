@@ -160,13 +160,28 @@ pub fn sample_probs<T: ReqOps + num_traits::AsPrimitive<f32>>(
 #[allow(dead_code)]
 mod dumdot {
     use super::{Array1, Array2, ArrayView1, ArrayView2, ReqOps, Zip};
-    use ndarray::{parallel::prelude::*, Axis};
+    use ndarray::{parallel::prelude::*, Axis, Data, ScalarOperand};
 
     /// The simple implementation of parallel matrix-vector multiplication using Rayon.
     /// Presumably this calculates every single row separately which could add some overhead.
     pub fn pardotv_simple<T: ReqOps>(lhs: &ArrayView2<T>, rhs: &ArrayView1<T>) -> Array1<T> {
         Zip::from(lhs.outer_iter()).par_map_collect(|row| row.dot(rhs))
     }
+
+    // pub fn pardot_mapped<
+    //     'a,
+    //     T: ReqOps + Send,
+    //     FI: Send + Data + ScalarOperand,
+    //     FO: Send + Data + ScalarOperand,
+    //     OT: ReqOps + Send,
+    // >(
+    //     lhs: &'a ArrayView2<FI>,
+    //     rhs: &'a ArrayView1<T>,
+    //     fi: impl Fn(FI) -> OT + Send + 'static,
+    //     fo: impl Fn(FO) -> T + Send + 'static,
+    // ) -> Array1<T> {
+    //     Zip::from(lhs.outer_iter()).par_map_collect(|row| row.mapv(fi).dot(rhs).mapv(fo))
+    // }
 
     /// Chunked parallel matrix-vector multiplication. However, it requires copying results
     /// around. Intuitively you might think it's better but just eyeballing the speed of the results
