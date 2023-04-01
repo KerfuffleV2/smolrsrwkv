@@ -4,4 +4,6 @@ target/
 *.pth
 *.safetensors
 *tokenizer.json
+perf.data*
+*.svg
 Cargo.lock

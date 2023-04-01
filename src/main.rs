@@ -10,8 +10,12 @@ pub mod context;
 pub mod loader;
 /// The actual model and code related to evaluating it.
 pub mod model;
+pub mod model_impls;
+pub mod model_traits;
+pub mod rwkvops;
 /// Utility functions.
 pub mod util;
+// pub mod modelna;
 
 use crate::{
     context::RWKVContext,
@@ -43,7 +47,7 @@ const TOP_P: f32 = 0.85;
 type ModelType = f32;
 
 fn main() -> Result<()> {
-    let mut rng = rand::thread_rng();
+    let mut rng: rand::rngs::StdRng = rand::SeedableRng::seed_from_u64(123);
     println!("* Loading tokenizer from: {TOKENIZER}");
     let tokenizer = Tokenizer::from_file(TOKENIZER).map_err(|e| anyhow!(e))?;
     println!("* Loading model from: {MODEL}");

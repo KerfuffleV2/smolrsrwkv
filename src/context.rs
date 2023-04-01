@@ -6,6 +6,7 @@ use tokenizers::Tokenizer;
 
 use crate::{
     model::{RWKVLayerState, RWKV},
+    model_traits::RunRWKV,
     util::ReqOps,
 };
 

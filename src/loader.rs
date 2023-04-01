@@ -140,14 +140,15 @@ impl<T: ConvertBF16Tensor> TryFrom<&SafeTensors<'_>> for RWKV<T> {
             .map(|lnum| {
                 println!("-   Loading layer {}/{n_layers}", lnum + 1);
                 let lm = tm.get(&Some(lnum)).expect("Impossible layer missing");
-                Result::<_, Error>::Ok(Layer {
-                    ln: [LayerNorm::try_from((1, lm))?, LayerNorm::try_from((2, lm))?],
+                Result::<_, Error>::Ok(RWKVLayer {
+                    ln1: LayerNorm::try_from((1, lm))?,
+                    ln2: LayerNorm::try_from((2, lm))?,
                     att: Attention::try_from(lm)?,
                     ffn: FeedForwardNetwork::try_from(lm)?,
                 })
                 //
             })
-            .collect::<Result<Vec<Layer<T>>, _>>()?;
+            .collect::<Result<Vec<RWKVLayer<T>>, _>>()?;
         let l0m = tm.get(&Some(0)).unwrap();
         let nlm = tm
             .get(&None)

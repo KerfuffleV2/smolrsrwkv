@@ -1,4 +1,4 @@
-use std::ops::Sub;
+use std::ops::{Add, Sub};
 
 use anyhow::{anyhow, Result};
 use mmap_rs::{MmapFlags, MmapOptions};
@@ -12,6 +12,7 @@ pub trait ReqOps: Sized + Default + Clone
 where
     Self: NdFloat + ScalarOperand + FromPrimitive,
     Self: for<'a> Sub<&'a Array1<Self>, Output = Array1<Self>>,
+    Self: for<'a> Add<&'a Array1<Self>, Output = Array1<Self>>,
 {
 }
 
