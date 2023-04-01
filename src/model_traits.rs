@@ -1,7 +1,4 @@
 #![allow(clippy::upper_case_acronyms)]
-use ndarray::{Array1, AsArray, Ix1};
-
-use crate::model::RWKVLayerState;
 
 pub trait HasRWKVLayerState<T> {
     type State;
@@ -11,11 +8,14 @@ pub trait HasRWKVLayerState<T> {
     fn set_cm_state(&mut self, cm_last_x: Self::State);
 }
 
-pub trait RunMix<T> {
+pub trait RunMix {
+    type XTy<'a>;
     type Out;
-    fn mix<'a, A: AsArray<'a, T, Ix1>>(&self, x: A, last_x: A) -> Self::Out
-    where
-        T: 'a;
+    fn mix<'a, X: Into<Self::XTy<'a>>, LX: Into<Self::XTy<'a>>>(
+        &self,
+        x: X,
+        last_x: LX,
+    ) -> Self::Out;
 }
 
 pub trait RunAttention<T> {
@@ -36,23 +36,32 @@ pub trait RunFFN<T> {
     ) -> Self::State;
 }
 
-pub trait RunLayerNorm<T> {
+pub trait RunLayerNorm {
+    type XTy<'a>;
     type Out;
     /// Normalize a 1D array.
-    fn norm<'a, A: AsArray<'a, T, Ix1>>(&self, x: A) -> Self::Out
-    where
-        T: 'a;
+    fn norm<'a, X: Into<Self::XTy<'a>>>(&self, x: X) -> Self::Out;
 }
 
 pub trait RunRWKVLayer<T> {
+    type XTy;
     type Out;
 
     /// Evaluates a layer. Each layer must be evaluated in sequence,
     /// serially as they each generate "x" and also require "x" as input.
-    fn evaluate(&self, x: Array1<T>, state: &mut RWKVLayerState<T>) -> Self::Out;
+    fn evaluate<S: HasRWKVLayerState<T, State = Self::Out>>(
+        &self,
+        x: Self::XTy,
+        state: &mut S,
+    ) -> Self::Out;
 }
 
 pub trait RunRWKV<T> {
     type Out;
-    fn evaluate(&self, token: usize, state: &mut [RWKVLayerState<T>]) -> Self::Out;
+    type Token;
+    fn evaluate<S: HasRWKVLayerState<T, State = Self::Out>>(
+        &self,
+        token: Self::Token,
+        state: &mut [S],
+    ) -> Self::Out;
 }

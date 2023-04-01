@@ -1,10 +1,12 @@
 #![allow(clippy::upper_case_acronyms)]
-use ndarray::{Array1, AsArray, Axis, Ix1};
+use ndarray::{Array1, ArrayView1, Axis};
 
-use crate::model::*;
-use crate::model_traits::*;
-use crate::rwkvops::RWKVOps11;
-use crate::util::{pardot, ReqOps};
+use crate::{
+    model::*,
+    model_traits::*,
+    rwkvops::RWKVOps11,
+    util::{pardot, ReqOps},
+};
 
 impl<T: ReqOps> HasRWKVLayerState<T> for RWKVLayerState<T> {
     type State = Array1<T>;
@@ -32,13 +34,15 @@ impl<T: ReqOps> HasRWKVLayerState<T> for RWKVLayerState<T> {
     }
 }
 
-impl<T: ReqOps> RunMix<T> for Mix<T> {
+impl<T: ReqOps> RunMix for Mix<T> {
+    type XTy<'a> = ArrayView1<'a, T>;
     type Out = Array1<T>;
 
-    fn mix<'a, A: AsArray<'a, T, Ix1>>(&self, x: A, last_x: A) -> Self::Out
-    where
-        T: 'a,
-    {
+    fn mix<'a, X: Into<Self::XTy<'a>>, LX: Into<Self::XTy<'a>>>(
+        &self,
+        x: X,
+        last_x: LX,
+    ) -> Self::Out {
         (&x.into() * &self.0) + (&last_x.into() * (T::one() - &self.0))
     }
 }
@@ -50,13 +54,11 @@ impl<T: ReqOps> RunAttention<T> for Attention<T> {
         x: Self::State,
         state: &mut S,
     ) -> Self::State {
-        let xv = &x.view();
         let (last_x, last_num, last_den) = state.get_tm_state();
-        let last_x = &last_x.view();
 
-        let k = pardot(&self.key_weight, &self.time.mix_k.mix(xv, last_x));
-        let v = pardot(&self.value_weight, &self.time.mix_v.mix(xv, last_x));
-        let r = pardot(&self.receptance_weight, &self.time.mix_r.mix(xv, last_x));
+        let k = pardot(&self.key_weight, &self.time.mix_k.mix(&x, last_x));
+        let v = pardot(&self.value_weight, &self.time.mix_v.mix(&x, last_x));
+        let r = pardot(&self.receptance_weight, &self.time.mix_r.mix(&x, last_x));
 
         let exp_k = k.mapv(|el| el.exp());
         let exp_decay = self.time.decay.mapv(|el| (-el.exp()).exp());
@@ -81,10 +83,9 @@ impl<T: ReqOps> RunFFN<T> for FeedForwardNetwork<T> {
         x: Self::State,
         state: &mut S,
     ) -> Self::State {
-        let xv = &x.view();
-        let last_x = &state.get_cm_state().view();
-        let k = pardot(&self.key_weight, &self.time.mix_k.mix(xv, last_x));
-        let r = pardot(&self.receptance_weight, &self.time.mix_r.mix(xv, last_x));
+        let last_x = state.get_cm_state();
+        let k = pardot(&self.key_weight, &self.time.mix_k.mix(&x, last_x));
+        let r = pardot(&self.receptance_weight, &self.time.mix_r.mix(&x, last_x));
         let vk = pardot(
             &self.value_weight,
             &k.mapv(|val| val.max(T::zero()).powi(2)),
@@ -95,12 +96,10 @@ impl<T: ReqOps> RunFFN<T> for FeedForwardNetwork<T> {
     }
 }
 
-impl<T: ReqOps> RunLayerNorm<T> for LayerNorm<T> {
+impl<T: ReqOps> RunLayerNorm for LayerNorm<T> {
+    type XTy<'a> = ArrayView1<'a, T>;
     type Out = Array1<T>;
-    fn norm<'a, A: AsArray<'a, T, Ix1>>(&self, x: A) -> Self::Out
-    where
-        T: 'a,
-    {
+    fn norm<'a, X: Into<Self::XTy<'a>>>(&self, x: X) -> Self::Out {
         let origx = x.into();
         let x = &origx.view();
         let mean = x.mean().unwrap();
@@ -110,9 +109,14 @@ impl<T: ReqOps> RunLayerNorm<T> for LayerNorm<T> {
 }
 
 impl<T: ReqOps> RunRWKVLayer<T> for RWKVLayer<T> {
+    type XTy = Array1<T>;
     type Out = Array1<T>;
 
-    fn evaluate(&self, x: Array1<T>, state: &mut RWKVLayerState<T>) -> Self::Out {
+    fn evaluate<S: HasRWKVLayerState<T, State = Self::Out>>(
+        &self,
+        x: Self::XTy,
+        state: &mut S,
+    ) -> Self::Out {
         let x = self.att.time_mixing(self.ln1.norm(&x), state) + &x;
         self.ffn.channel_mixing(self.ln2.norm(&x), state) + &x
     }
@@ -120,8 +124,13 @@ impl<T: ReqOps> RunRWKVLayer<T> for RWKVLayer<T> {
 
 impl<T: ReqOps> RunRWKV<T> for RWKV<T> {
     type Out = Array1<T>;
+    type Token = usize;
 
-    fn evaluate(&self, token: usize, state: &mut [RWKVLayerState<T>]) -> Self::Out {
+    fn evaluate<S: HasRWKVLayerState<T, State = Self::Out>>(
+        &self,
+        token: Self::Token,
+        state: &mut [S],
+    ) -> Self::Out {
         let initial_x = self.ln0.norm(self.emb.index_axis(Axis(0), token));
 
         let x = self
