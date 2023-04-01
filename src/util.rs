@@ -1,8 +1,10 @@
-use std::ops::{Add, Sub};
+use std::ops::{Add, Deref, Sub};
 
 use anyhow::{anyhow, Result};
 use mmap_rs::{MmapFlags, MmapOptions};
-use ndarray::{Array1, Array2, ArrayView1, ArrayView2, NdFloat, ScalarOperand, Zip};
+use ndarray::{
+    Array, Array1, Array2, ArrayView1, ArrayView2, Dimension, Ix1, NdFloat, ScalarOperand, Zip,
+};
 use num_traits::FromPrimitive;
 use safetensors::tensor::TensorView;
 
@@ -18,6 +20,35 @@ where
 
 impl ReqOps for f32 {}
 impl ReqOps for f64 {}
+
+#[derive(Debug, Clone, PartialEq)]
+#[repr(transparent)]
+pub struct FloatTensor<T, I: Dimension = Ix1>(pub Array<T, I>);
+impl<T, I: Dimension> Deref for FloatTensor<T, I> {
+    type Target = Array<T, I>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+pub trait Conv2: Sized {
+    fn tensor_to(tensor: &TensorView<'_>) -> Result<Self>;
+}
+
+impl Conv2 for FloatTensor<f32, Ix1> {
+    fn tensor_to(tensor: &TensorView<'_>) -> Result<Self> {
+        Ok(FloatTensor(Array1::from(bf16_tensor_to_f32(tensor))))
+    }
+}
+
+// impl TryFrom<&TensorView<'_>> for Murp<f32> {
+//     type Error = anyhow::Error;
+
+//     fn try_from(tensor: &TensorView<'_>) -> Result<Self> {
+//         Ok(Murp(Array1::from(bf16_tensor_to_f32(tensor))))
+//     }
+// }
 
 /// Converting bfloat16 format tensors to 1D or 2D arrays of float (only implemented for f32).
 /// You could implement it for f64, but there's no practical reason to do so. Unfortunately,

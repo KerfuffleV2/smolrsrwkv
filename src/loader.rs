@@ -2,10 +2,17 @@ use anyhow::{anyhow, Error, Result};
 use mmap_rs::Mmap;
 use safetensors::{tensor::TensorView, SafeTensors};
 
-use ndarray::Axis;
-use std::collections::HashMap;
+use ndarray::{Axis, Ix1};
+use std::{
+    collections::HashMap,
+    io::{stdout, Write},
+};
 
-use crate::{model::*, model_traits::RunLayerNorm, util::ConvertBF16Tensor};
+use crate::{
+    model::*,
+    model_traits::RunLayerNorm,
+    util::{Conv2, ConvertBF16Tensor, FloatTensor},
+};
 
 /// LayerMap helper type to avoid repetition.
 type LM<'a> = HashMap<String, safetensors::tensor::TensorView<'a>>;
@@ -21,7 +28,10 @@ fn gk<O>(m: &LM, k: &str, f: impl Fn(&TensorView) -> O) -> Result<O> {
 /// Requires the ConvertBF16Tensor trait (from `crate::utils`) due to
 /// tensors being stored in bfloat16 format which isn't suitable for
 /// actual calculation.
-impl<T: ConvertBF16Tensor> TryFrom<Mmap> for RWKV<T> {
+impl<T: ConvertBF16Tensor> TryFrom<Mmap> for RWKV<T>
+where
+    FloatTensor<T, Ix1>: Conv2,
+{
     type Error = Error;
 
     fn try_from(value: Mmap) -> std::result::Result<Self, Self::Error> {
@@ -33,7 +43,10 @@ impl<T: ConvertBF16Tensor> TryFrom<Mmap> for RWKV<T> {
     }
 }
 
-impl<T: ConvertBF16Tensor> TryFrom<(usize, &LM<'_>)> for LayerNorm<T> {
+impl<T: ConvertBF16Tensor> TryFrom<(usize, &LM<'_>)> for LayerNorm<T>
+where
+    FloatTensor<T, Ix1>: Conv2,
+{
     type Error = Error;
 
     fn try_from((idx, lm): (usize, &HashMap<String, TensorView<'_>>)) -> Result<Self> {
@@ -50,12 +63,15 @@ impl<T: ConvertBF16Tensor> TryFrom<(usize, &LM<'_>)> for LayerNorm<T> {
     }
 }
 
-impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for AttTime<T> {
+impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for AttTime<T>
+where
+    FloatTensor<T, Ix1>: Conv2,
+{
     type Error = Error;
 
     fn try_from(lm: &LM<'_>) -> Result<Self> {
         Ok(AttTime {
-            first: gk(lm, "att.time_first", T::tensor_to_array1)?,
+            first: gk(lm, "att.time_first", FloatTensor::tensor_to)??,
             // Time decay can be precomputed to simplify inference.
             decay: gk(lm, "att.time_decay", T::tensor_to_array1)?.mapv(|el| (-el.exp()).exp()),
             mix_k: Mix(gk(lm, "att.time_mix_k", T::tensor_to_array1)?),
@@ -65,7 +81,10 @@ impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for AttTime<T> {
     }
 }
 
-impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for Attention<T> {
+impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for Attention<T>
+where
+    FloatTensor<T, Ix1>: Conv2,
+{
     type Error = Error;
 
     fn try_from(lm: &LM<'_>) -> Result<Self> {
@@ -103,7 +122,10 @@ impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for FeedForwardNetwork<T> {
     }
 }
 
-impl<T: ConvertBF16Tensor> TryFrom<&SafeTensors<'_>> for RWKV<T> {
+impl<T: ConvertBF16Tensor> TryFrom<&SafeTensors<'_>> for RWKV<T>
+where
+    FloatTensor<T, Ix1>: Conv2,
+{
     type Error = Error;
 
     fn try_from(tensors: &SafeTensors<'_>) -> Result<Self> {
@@ -136,26 +158,12 @@ impl<T: ConvertBF16Tensor> TryFrom<&SafeTensors<'_>> for RWKV<T> {
                 Result::<_, Error>::Ok(tm)
             },
         )?;
-        anyhow::ensure!(n_layers > 0, "Not even one measly layer?");
 
-        let layers = (0..n_layers)
-            .map(|lnum| {
-                println!("-   Loading layer {}/{n_layers}", lnum + 1);
-                let lm = tm.get(&Some(lnum)).expect("Impossible layer missing");
-                Result::<_, Error>::Ok(RWKVLayer {
-                    ln1: LayerNorm::try_from((1, lm))?,
-                    ln2: LayerNorm::try_from((2, lm))?,
-                    att: Attention::try_from(lm)?,
-                    ffn: FeedForwardNetwork::try_from(lm)?,
-                })
-            })
-            .collect::<Result<Vec<RWKVLayer<T>>, _>>()?;
-        let l0m = tm.get(&Some(0)).unwrap();
+        println!("* Precomputing embedding.");
         let nlm = tm
             .get(&None)
             .ok_or_else(|| anyhow!("Missing non-layer tensors!"))?;
-        println!("* Loading non-layer tensors.");
-
+        let l0m = tm.get(&Some(0)).unwrap();
         // It's possible to just precompute the embeddings in advance.
         let ln0 = LayerNorm::try_from((0, l0m))?;
         let mut emb = gk(nlm, "emb.weight", T::tensor_to_array2)??;
@@ -167,6 +175,33 @@ impl<T: ConvertBF16Tensor> TryFrom<&SafeTensors<'_>> for RWKV<T> {
                 .expect("Impossible: into_slice_memory_order failed!");
             idxemb.copy_from_slice(&ln0.norm(&idxemb).into_raw_vec());
         });
+
+        anyhow::ensure!(n_layers > 0, "Not even one measly layer?");
+
+        let mut stdout = stdout().lock();
+        print!("* Loading {n_layers} layer(s): ");
+        stdout.flush().ok();
+        let layers = (0..n_layers)
+            .map(|lnum| {
+                print!("{}", lnum + 1);
+                stdout.flush().ok();
+                // println!("-   Loading layer {}/{n_layers}", lnum + 1);
+                let lm = tm.get(&Some(lnum)).expect("Impossible layer missing");
+                let result = Result::<_, Error>::Ok(RWKVLayer {
+                    ln1: LayerNorm::try_from((1, lm))?,
+                    ln2: LayerNorm::try_from((2, lm))?,
+                    att: Attention::try_from(lm)?,
+                    ffn: FeedForwardNetwork::try_from(lm)?,
+                });
+                if lnum < n_layers - 1 {
+                    print!(", ");
+                    stdout.flush().ok();
+                }
+                result
+            })
+            .collect::<Result<Vec<RWKVLayer<T>>, _>>()?;
+
+        println!("\n* Loading non-layer tensors.");
 
         Ok(RWKV {
             emb,

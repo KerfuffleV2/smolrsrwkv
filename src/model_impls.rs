@@ -64,7 +64,7 @@ impl<T: ReqOps> RunAttention<T> for Attention<T> {
         let exp_decay = self.time.decay.view();
 
         let wkv = {
-            let e = (&self.time.first + &k).mapv(|el| el.exp());
+            let e = (&*self.time.first + &k).mapv(|el| el.exp());
             (last_num + (&e * &v)) / (last_den + e)
         };
         let rwkv = r.sigmoid() * wkv;

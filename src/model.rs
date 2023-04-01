@@ -1,7 +1,7 @@
 #![allow(clippy::upper_case_acronyms)]
-use ndarray::{Array1, Array2};
+use ndarray::{Array1, Array2, Ix1};
 
-use crate::util::ReqOps;
+use crate::util::{FloatTensor, ReqOps};
 
 #[derive(Debug, Clone, PartialEq)]
 /// Corresponds to:
@@ -33,7 +33,7 @@ pub struct AttTime<T> {
     pub mix_k: Mix<T>,
     pub mix_v: Mix<T>,
     pub mix_r: Mix<T>,
-    pub first: Array1<T>,
+    pub first: FloatTensor<T>,
 }
 
 /// Corresponds to:
