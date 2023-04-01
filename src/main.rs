@@ -51,7 +51,7 @@ fn main() -> Result<()> {
     println!("* Loading tokenizer from: {TOKENIZER}");
     let tokenizer = Tokenizer::from_file(TOKENIZER).map_err(|e| anyhow!(e))?;
     println!("* Loading model from: {MODEL}");
-    let rwkv: RWKV<ModelType> = mmap_file(MODEL)?.try_into()?;
+    let rwkv: RWKV<ModelType, ModelType> = mmap_file(MODEL)?.try_into()?;
     let mut context = RWKVContext::new(rwkv, tokenizer);
 
     // Helper to print out a string without a newline and then flush the console.
@@ -65,7 +65,7 @@ fn main() -> Result<()> {
 
     println!(
         "* Loaded: layers={}, embed={}, vocab={}",
-        context.n_layers, context.n_embed, context.n_vocab
+        context.rwkv.n_layers, context.rwkv.n_embed, context.rwkv.n_vocab
     );
 
     context.feed_prompt(PROMPT, Some(show_token))?;

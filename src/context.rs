@@ -11,39 +11,25 @@ use crate::{
 };
 
 /// Context that holds the state of the RWKV model.
-pub struct RWKVContext<T> {
+pub struct RWKVContext<WT, AT> {
     /// The RWKV model data — immutable.
-    pub rwkv: RWKV<T>,
+    pub rwkv: RWKV<WT, AT>,
     /// Model state.
-    pub state: Vec<RWKVLayerState<T>>,
+    pub state: Vec<RWKVLayerState<AT>>,
     /// Probabilities from the last step (starts filled with zeros).
-    pub last_probs: Array1<T>,
+    pub last_probs: Array1<WT>,
     /// The tokenizer.
     pub tokenizer: Tokenizer,
-
-    /// Number of vocabulary items.
-    pub n_vocab: usize,
-    /// Number of embedding items.
-    pub n_embed: usize,
-    /// Number of layers in the model.
-    pub n_layers: usize,
 }
 
-impl<T: ReqOps> RWKVContext<T> {
-    pub fn new(rwkv: RWKV<T>, tokenizer: Tokenizer) -> Self {
-        let n_embed = rwkv.emb.shape()[1];
-        let n_layers = rwkv.layers.len();
-        let n_vocab = rwkv.emb.shape()[0];
-
-        let initial_state = std::iter::repeat(RWKVLayerState::new(n_embed))
-            .take(n_layers)
+impl<T: ReqOps> RWKVContext<T, T> {
+    pub fn new(rwkv: RWKV<T, T>, tokenizer: Tokenizer) -> Self {
+        let initial_state = std::iter::repeat(RWKVLayerState::new(rwkv.n_embed))
+            .take(rwkv.n_layers)
             .collect::<Vec<_>>();
-        let initial_probs = Array1::zeros(n_vocab);
+        let initial_probs = Array1::zeros(rwkv.n_vocab);
 
         Self {
-            n_embed,
-            n_layers,
-            n_vocab,
             rwkv,
             state: initial_state,
             last_probs: initial_probs,

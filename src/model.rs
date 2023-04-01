@@ -7,99 +7,101 @@ use crate::util::{FloatTensor, ReqOps};
 /// Corresponds to:
 /// 1. blocks.N.att.time_mix_[kvr]
 /// 2. blocks.N.ffn.time_mix_[kr]
-pub struct Mix<T>(pub Array1<T>);
+pub struct Mix<WT>(pub Array1<WT>);
 
 #[derive(Debug, Clone, PartialEq)]
 /// Corresponds to:
 /// 1. ln_out.[bias,weight]
 /// 2. blocks.N.ln[012].[bias,weight]
 /// However, note that ln0 only exists in block 0.
-pub struct LayerNorm<T> {
-    pub bias: Array1<T>,
-    pub weight: Array1<T>,
-}
-
-pub struct LayerNorm2<T> {
-    pub bias: Array1<T>,
-    pub weight: Array1<T>,
+pub struct LayerNorm<WT> {
+    pub bias: Array1<WT>,
+    pub weight: Array1<WT>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 /// Corresponds to:
 /// 1. blocks.N.time_[first,decay]
 /// 2. blocks.N.time_mix_[kvr]
-pub struct AttTime<T> {
-    pub decay: Array1<T>,
-    pub mix_k: Mix<T>,
-    pub mix_v: Mix<T>,
-    pub mix_r: Mix<T>,
-    pub first: FloatTensor<T>,
+pub struct AttTime<WT, AT> {
+    pub decay: Array1<AT>,
+    pub mix_k: Mix<WT>,
+    pub mix_v: Mix<WT>,
+    pub mix_r: Mix<WT>,
+    pub first: FloatTensor<AT>,
 }
 
 /// Corresponds to:
 /// 1. blocks.N.ffn.time_mix_[kr]
 #[derive(Debug, Clone, PartialEq)]
-pub struct FFNTime<T> {
-    pub mix_k: Mix<T>,
-    pub mix_r: Mix<T>,
+pub struct FFNTime<WT> {
+    pub mix_k: Mix<WT>,
+    pub mix_r: Mix<WT>,
 }
 
 /// Corresponds to:
 /// 1. blocks.N.att.[key,value,output,receptance].weight
 /// 3. Keys described in AttTime.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Attention<T> {
-    pub key_weight: Array2<T>,
-    pub value_weight: Array2<T>,
-    pub output_weight: Array2<T>,
-    pub receptance_weight: Array2<T>,
-    pub time: AttTime<T>,
+pub struct Attention<WT, AT> {
+    pub key_weight: Array2<WT>,
+    pub value_weight: Array2<WT>,
+    pub output_weight: Array2<WT>,
+    pub receptance_weight: Array2<WT>,
+    pub time: AttTime<WT, AT>,
 }
 
 /// Corresponds to:
 /// 1. blocks.N.ffn.[key,value,receptance].weight
 /// 3. Keys described in FFNTime.
 #[derive(Debug, Clone, PartialEq)]
-pub struct FeedForwardNetwork<T> {
-    pub key_weight: Array2<T>,
-    pub value_weight: Array2<T>,
-    pub receptance_weight: Array2<T>,
-    pub time: FFNTime<T>,
+pub struct FeedForwardNetwork<WT, AT> {
+    pub key_weight: Array2<WT>,
+    pub value_weight: Array2<WT>,
+    pub receptance_weight: Array2<WT>,
+    pub time: FFNTime<AT>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 /// See the comments for Attention, FeedForwardNetwork and LayerNorm.
-pub struct RWKVLayer<T> {
+pub struct RWKVLayer<WT, AT> {
     /// l1 is used for time mixing,
-    pub ln1: LayerNorm<T>,
+    pub ln1: LayerNorm<WT>,
     /// ln2 is used for channel mixing.
-    pub ln2: LayerNorm<T>,
-    pub att: Attention<T>,
-    pub ffn: FeedForwardNetwork<T>,
+    pub ln2: LayerNorm<WT>,
+    pub att: Attention<WT, AT>,
+    pub ffn: FeedForwardNetwork<WT, AT>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct RWKV<T> {
+pub struct RWKV<WT, AT> {
     /// emb.weight
-    pub emb: Array2<T>,
+    pub emb: Array2<WT>,
     /// head.weight
-    pub head: Array2<T>,
+    pub head: Array2<WT>,
     /// ln_out.[weight,bias]
-    pub ln_out: LayerNorm<T>,
-    pub layers: Vec<RWKVLayer<T>>,
+    pub ln_out: LayerNorm<WT>,
+    pub layers: Vec<RWKVLayer<WT, AT>>,
+
+    /// Number of vocabulary items.
+    pub n_vocab: usize,
+    /// Number of embedding items.
+    pub n_embed: usize,
+    /// Number of layers in the model.
+    pub n_layers: usize,
 }
 
 #[derive(Clone, PartialEq)]
 /// Each layer has its own independent state.
-pub struct RWKVLayerState<T> {
+pub struct RWKVLayerState<WT> {
     /// State from time mixing.
-    pub tm_last_x: Array1<T>,
+    pub tm_last_x: Array1<WT>,
     /// Time mixing numerator?
-    pub tm_num: Array1<T>,
+    pub tm_num: Array1<WT>,
     /// Time mixing denominator?
-    pub tm_den: Array1<T>,
+    pub tm_den: Array1<WT>,
     /// State from channel mixing.
-    pub cm_last_x: Array1<T>,
+    pub cm_last_x: Array1<WT>,
 }
 
 impl<T: ReqOps> RWKVLayerState<T> {

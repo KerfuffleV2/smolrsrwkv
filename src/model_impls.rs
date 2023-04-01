@@ -47,7 +47,7 @@ impl<T: ReqOps> RunMix for Mix<T> {
     }
 }
 
-impl<T: ReqOps> RunAttention<T> for Attention<T> {
+impl<T: ReqOps> RunAttention<T> for Attention<T, T> {
     type State = Array1<T>;
     fn time_mixing<S: HasRWKVLayerState<T, State = Self::State>>(
         &self,
@@ -76,7 +76,7 @@ impl<T: ReqOps> RunAttention<T> for Attention<T> {
     }
 }
 
-impl<T: ReqOps> RunFFN<T> for FeedForwardNetwork<T> {
+impl<T: ReqOps> RunFFN<T> for FeedForwardNetwork<T, T> {
     type State = Array1<T>;
     fn channel_mixing<S: HasRWKVLayerState<T, State = Self::State>>(
         &self,
@@ -108,19 +108,7 @@ impl<T: ReqOps> RunLayerNorm for LayerNorm<T> {
     }
 }
 
-impl<T: ReqOps> RunLayerNorm for LayerNorm2<T> {
-    type XTy<'a> = ArrayView2<'a, T>;
-    type Out = Array2<T>;
-    fn norm<'a, X: Into<Self::XTy<'a>>>(&self, x: X) -> Self::Out {
-        let origx = x.into();
-        let x = &origx.view();
-        let mean = x.mean().unwrap();
-        let std = x.std(T::zero());
-        (((x - mean) / std) * &self.weight) + &self.bias
-    }
-}
-
-impl<T: ReqOps> RunRWKVLayer<T> for RWKVLayer<T> {
+impl<T: ReqOps> RunRWKVLayer<T> for RWKVLayer<T, T> {
     type XTy = Array1<T>;
     type Out = Array1<T>;
 
@@ -134,7 +122,7 @@ impl<T: ReqOps> RunRWKVLayer<T> for RWKVLayer<T> {
     }
 }
 
-impl<T: ReqOps> RunRWKV<T> for RWKV<T> {
+impl<T: ReqOps> RunRWKV<T> for RWKV<T, T> {
     type Out = Array1<T>;
     type Token = usize;
 

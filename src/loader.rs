@@ -28,7 +28,7 @@ fn gk<O>(m: &LM, k: &str, f: impl Fn(&TensorView) -> O) -> Result<O> {
 /// Requires the ConvertBF16Tensor trait (from `crate::utils`) due to
 /// tensors being stored in bfloat16 format which isn't suitable for
 /// actual calculation.
-impl<T: ConvertBF16Tensor> TryFrom<Mmap> for RWKV<T>
+impl<T: ConvertBF16Tensor> TryFrom<Mmap> for RWKV<T, T>
 where
     FloatTensor<T, Ix1>: Conv2,
 {
@@ -63,7 +63,7 @@ where
     }
 }
 
-impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for AttTime<T>
+impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for AttTime<T, T>
 where
     FloatTensor<T, Ix1>: Conv2,
 {
@@ -81,7 +81,7 @@ where
     }
 }
 
-impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for Attention<T>
+impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for Attention<T, T>
 where
     FloatTensor<T, Ix1>: Conv2,
 {
@@ -109,7 +109,7 @@ impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for FFNTime<T> {
     }
 }
 
-impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for FeedForwardNetwork<T> {
+impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for FeedForwardNetwork<T, T> {
     type Error = Error;
 
     fn try_from(lm: &LM<'_>) -> Result<Self> {
@@ -122,14 +122,14 @@ impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for FeedForwardNetwork<T> {
     }
 }
 
-impl<T: ConvertBF16Tensor> TryFrom<&SafeTensors<'_>> for RWKV<T>
+impl<T: ConvertBF16Tensor> TryFrom<&SafeTensors<'_>> for RWKV<T, T>
 where
     FloatTensor<T, Ix1>: Conv2,
 {
     type Error = Error;
 
     fn try_from(tensors: &SafeTensors<'_>) -> Result<Self> {
-        let mut n_layers = 0;
+        let mut n_layers = 0usize;
         // This builds a HashMap of HashMaps.
         // The top level is None for non-layer tensors like "emb.weight" and
         // Some(layer_index) for each layer. The second level is just String key to TensorView.
@@ -144,10 +144,10 @@ where
             |mut tm, (mut name, tensor)| {
                 let (layer_num, ktv) = if let Some(rest) = name.strip_prefix("blocks.") {
                     let result = rest.split_once('.').ok_or_else(|| anyhow!("Bad format"))?;
-                    let lnum = result.0.parse()?;
+                    let lnum: usize = result.0.parse()?;
                     n_layers = n_layers.max(lnum + 1);
                     name = result.1.to_string();
-                    (Some(lnum), tensor)
+                    (Some(lnum as u32), tensor)
                 } else {
                     (None, tensor)
                 };
@@ -167,6 +167,7 @@ where
         // It's possible to just precompute the embeddings in advance.
         let ln0 = LayerNorm::try_from((0, l0m))?;
         let mut emb = gk(nlm, "emb.weight", T::tensor_to_array2)??;
+        let n_embed = emb.shape()[1];
         let n_vocab = emb.shape()[0];
         (0..n_vocab).for_each(|idx| {
             let idxemb = emb
@@ -186,7 +187,9 @@ where
                 print!("{}", lnum + 1);
                 stdout.flush().ok();
                 // println!("-   Loading layer {}/{n_layers}", lnum + 1);
-                let lm = tm.get(&Some(lnum)).expect("Impossible layer missing");
+                let lm = tm
+                    .get(&Some(lnum as u32))
+                    .expect("Impossible layer missing");
                 let result = Result::<_, Error>::Ok(RWKVLayer {
                     ln1: LayerNorm::try_from((1, lm))?,
                     ln2: LayerNorm::try_from((2, lm))?,
@@ -199,7 +202,7 @@ where
                 }
                 result
             })
-            .collect::<Result<Vec<RWKVLayer<T>>, _>>()?;
+            .collect::<Result<Vec<RWKVLayer<T, T>>, _>>()?;
 
         println!("\n* Loading non-layer tensors.");
 
@@ -211,6 +214,9 @@ where
                 weight: gk(nlm, "ln_out.weight", T::tensor_to_array1)?,
             },
             layers,
+            n_layers,
+            n_embed,
+            n_vocab,
         })
     }
 }
