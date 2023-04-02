@@ -94,6 +94,19 @@ pub fn mmap_file(s: &str) -> Result<mmap_rs::Mmap> {
     }
 }
 
+/// Uses a pool to run a function with a limited number of threads.
+pub fn run_threadlimited<R, F>(max_threads: usize, f: F) -> R
+where
+    R: Send,
+    F: FnOnce() -> R + Send,
+{
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(max_threads)
+        .build()
+        .unwrap()
+        .install(f)
+}
+
 /// Helper function to convert a SafeTensors TensorView into a flat
 /// vector of f32. The number of dimensions doesn't matter at this
 /// point.

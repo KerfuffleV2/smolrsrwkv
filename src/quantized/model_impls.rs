@@ -158,7 +158,7 @@ impl RunRWKV<ATy> for RWKV {
                 layer.evaluate(x, &mut state[lnum])
             });
 
-        let x = pardot(&self.head, &self.ln_out.norm(&x));
+        let x = pardot8(&self.head, &self.ln_out.norm(&x));
         let x_max = x.fold(ATy::min_value(), |acc, el| acc.max(*el));
         let e_x = (x - x_max).mapv(|el| el.exp());
 

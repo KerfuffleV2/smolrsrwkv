@@ -62,7 +62,7 @@ pub struct RWKV {
     /// emb.weight
     pub emb: Array2<ATy>,
     /// head.weight
-    pub head: Array2<ATy>,
+    pub head: TensorQ2,
     /// ln_out.[weight,bias]
     pub ln_out: S::LayerNorm<ATy>,
     pub layers: Vec<RWKVLayer>,

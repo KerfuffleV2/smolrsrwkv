@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Error, Result};
 use mmap_rs::Mmap;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use safetensors::{tensor::TensorView, SafeTensors};
 
 use ndarray::Axis;
@@ -160,28 +161,22 @@ impl<T: ConvertBF16Tensor> TryFrom<&SafeTensors<'_>> for RWKV<T> {
 
         anyhow::ensure!(n_layers > 0, "Not even one measly layer?");
 
-        let mut stdout = stdout().lock();
         print!("* Loading {n_layers} layer(s): ");
-        stdout.flush().ok();
+        stdout().flush().ok();
         let layers = (0..n_layers)
+            .into_par_iter()
             .map(|lnum| {
-                print!("{}", lnum + 1);
-                stdout.flush().ok();
-                // println!("-   Loading layer {}/{n_layers}", lnum + 1);
+                print!(".");
+                stdout().flush().ok();
                 let lm = tm
                     .get(&Some(lnum as u32))
                     .expect("Impossible layer missing");
-                let result = Result::<_, Error>::Ok(RWKVLayer {
+                Result::<_, Error>::Ok(RWKVLayer {
                     ln_tm: LayerNorm::try_from((1, lm))?,
                     ln_cm: LayerNorm::try_from((2, lm))?,
                     att: Attention::try_from(lm)?,
                     ffn: FeedForwardNetwork::try_from(lm)?,
-                });
-                if lnum < n_layers - 1 {
-                    print!(", ");
-                    stdout.flush().ok();
-                }
-                result
+                })
             })
             .collect::<Result<Vec<RWKVLayer<T>>, _>>()?;
 
