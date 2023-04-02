@@ -145,7 +145,7 @@ impl<T: ConvertBF16Tensor> TryFrom<&SafeTensors<'_>> for RWKV<T> {
         let nlm = tm
             .get(&None)
             .ok_or_else(|| anyhow!("Missing non-layer tensors!"))?;
-        let l0m = tm.get(&Some(0)).unwrap();
+        let l0m = tm.get(&Some(0)).expect("Missing first layer!");
         // It's possible to just precompute the embeddings in advance.
         let ln0 = LayerNorm::try_from((0, l0m))?;
         let mut emb = gk(nlm, "emb.weight", T::tensor_to_array2)??;

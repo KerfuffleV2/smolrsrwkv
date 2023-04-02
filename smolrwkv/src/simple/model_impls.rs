@@ -101,7 +101,7 @@ impl<T: ReqOps> RunLayerNorm for LayerNorm<T> {
     fn norm<'a, X: Into<Self::XTy<'a>>>(&self, x: X) -> Self::Out {
         let origx = x.into();
         let x = &origx.view();
-        let mean = x.mean().unwrap();
+        let mean = x.mean().expect("Invalid valid in mean()");
         let std = x.std(T::zero());
         (((x - mean) / std) * &self.weight) + &self.bias
     }

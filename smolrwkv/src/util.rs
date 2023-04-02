@@ -72,7 +72,7 @@ where
     rayon::ThreadPoolBuilder::new()
         .num_threads(max_threads)
         .build()
-        .unwrap()
+        .expect("Building thread pool failed!")
         .install(f)
 }
 
@@ -80,7 +80,12 @@ where
 /// vector of f32. The number of dimensions doesn't matter at this
 /// point.
 fn bf16_tensor_to_f32(tensor: &TensorView<'_>) -> Vec<f32> {
-    assert_eq!(tensor.dtype(), safetensors::Dtype::BF16);
+    assert_eq!(
+        tensor.dtype(),
+        safetensors::Dtype::BF16,
+        "Expected BF16 tensor"
+    );
+    assert_ne!(tensor.data().len() & 1, 1, "Odd size for BF16 tensor input");
     tensor
         .data()
         .chunks(2)
