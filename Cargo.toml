@@ -1,6 +1,7 @@
 [package]
 name = "smolrsrwkv"
-version = "0.1.0"
+authors = ["KerfuffleV2@github"]
+version = "0.2.0"
 edition = "2021"
 
 [dependencies]
@@ -13,3 +14,9 @@ rayon = "1.7"
 half = "2.2"
 rand = "0.8"
 num-traits = "0.2"
+
+[profile.release]
+# Needed for profiling. Shouldn't affect performance.
+debug = 1
+#lto = "thin"
+#codegen-units = 1

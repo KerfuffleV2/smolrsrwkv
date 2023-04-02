@@ -1,8 +1,10 @@
-use std::ops::Sub;
+use std::ops::{Add, Deref, Sub};
 
 use anyhow::{anyhow, Result};
 use mmap_rs::{MmapFlags, MmapOptions};
-use ndarray::{Array1, Array2, ArrayView1, ArrayView2, NdFloat, ScalarOperand, Zip};
+use ndarray::{
+    Array, Array1, Array2, ArrayView1, ArrayView2, Dimension, Ix1, NdFloat, ScalarOperand, Zip,
+};
 use num_traits::FromPrimitive;
 use safetensors::tensor::TensorView;
 
@@ -12,11 +14,41 @@ pub trait ReqOps: Sized + Default + Clone
 where
     Self: NdFloat + ScalarOperand + FromPrimitive,
     Self: for<'a> Sub<&'a Array1<Self>, Output = Array1<Self>>,
+    Self: for<'a> Add<&'a Array1<Self>, Output = Array1<Self>>,
 {
 }
 
 impl ReqOps for f32 {}
 impl ReqOps for f64 {}
+
+#[derive(Debug, Clone, PartialEq)]
+#[repr(transparent)]
+pub struct FloatTensor<T, I: Dimension = Ix1>(pub Array<T, I>);
+impl<T, I: Dimension> Deref for FloatTensor<T, I> {
+    type Target = Array<T, I>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+pub trait Conv2: Sized {
+    fn tensor_to(tensor: &TensorView<'_>) -> Result<Self>;
+}
+
+impl Conv2 for FloatTensor<f32, Ix1> {
+    fn tensor_to(tensor: &TensorView<'_>) -> Result<Self> {
+        Ok(FloatTensor(Array1::from(bf16_tensor_to_f32(tensor))))
+    }
+}
+
+// impl TryFrom<&TensorView<'_>> for Murp<f32> {
+//     type Error = anyhow::Error;
+
+//     fn try_from(tensor: &TensorView<'_>) -> Result<Self> {
+//         Ok(Murp(Array1::from(bf16_tensor_to_f32(tensor))))
+//     }
+// }
 
 /// Converting bfloat16 format tensors to 1D or 2D arrays of float (only implemented for f32).
 /// You could implement it for f64, but there's no practical reason to do so. Unfortunately,
@@ -62,8 +94,17 @@ pub fn mmap_file(s: &str) -> Result<mmap_rs::Mmap> {
     }
 }
 
-pub fn sigmoid<T: ReqOps>(x: &Array1<T>) -> Array1<T> {
-    x.map(|val| T::one() / (T::one() + (-(*val)).exp()))
+/// Uses a pool to run a function with a limited number of threads.
+pub fn run_threadlimited<R, F>(max_threads: usize, f: F) -> R
+where
+    R: Send,
+    F: FnOnce() -> R + Send,
+{
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(max_threads)
+        .build()
+        .unwrap()
+        .install(f)
 }
 
 /// Helper function to convert a SafeTensors TensorView into a flat
@@ -129,15 +170,43 @@ pub fn sample_probs<T: ReqOps + num_traits::AsPrimitive<f32>>(
     dist.sample(rng)
 }
 
+pub fn sigmoid<T: ReqOps>(x: Array1<T>) -> Array1<T> {
+    let o = T::one();
+    x.map(|val| o / (o + (-(*val)).exp()))
+}
+
 #[allow(dead_code)]
 mod dumdot {
     use super::{Array1, Array2, ArrayView1, ArrayView2, ReqOps, Zip};
+    use crate::quantized::model::{ATy, TensorQ2};
     use ndarray::{parallel::prelude::*, Axis};
 
     /// The simple implementation of parallel matrix-vector multiplication using Rayon.
     /// Presumably this calculates every single row separately which could add some overhead.
     pub fn pardotv_simple<T: ReqOps>(lhs: &ArrayView2<T>, rhs: &ArrayView1<T>) -> Array1<T> {
         Zip::from(lhs.outer_iter()).par_map_collect(|row| row.dot(rhs))
+    }
+
+    pub fn pardot8(lhs: &TensorQ2, rhs: &Array1<ATy>) -> Array1<ATy> {
+        let rx = &lhs.rx;
+        let mx = lhs
+            .mx
+            .broadcast(lhs.weight.raw_dim())
+            .expect("Impossible? Broadcast mx failed!");
+        let my = lhs
+            .my
+            .broadcast(lhs.weight.raw_dim())
+            .expect("Impossible? Broadcast my failed!");
+
+        Zip::from(lhs.weight.outer_iter())
+            .and(lhs.ry.outer_iter())
+            .and(my.outer_iter())
+            .and(mx.outer_iter())
+            .par_map_collect(|row, ry, my, mx| {
+                let row = row.map(|el| (*el as f32) + 0.5) * ry * rx + my + mx;
+
+                row.dot(rhs)
+            })
     }
 
     /// Chunked parallel matrix-vector multiplication. However, it requires copying results
@@ -156,3 +225,4 @@ mod dumdot {
     }
 }
 pub use dumdot::pardot;
+pub use dumdot::pardot8;
