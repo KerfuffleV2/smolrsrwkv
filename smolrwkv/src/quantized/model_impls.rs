@@ -58,10 +58,8 @@ impl From<Array2<ATy>> for TensorQ2 {
         let weight = value.mapv(|el| (el * 256.0).floor().clamp(0.0, 255.0) as u8);
         Self {
             weight,
-            mx,
-            my,
-            rx: rx / 16.0,
-            ry: ry / 16.0,
+            mxy: mx + my,
+            ryx: (ry / 16.0) * (rx / 16.0),
         }
     }
 }

@@ -55,15 +55,30 @@ fn main() -> Result<()> {
     let (n_layers, n_embed, n_vocab) = context.params();
     println!("* Loaded: layers={n_layers}, embed={n_embed}, vocab={n_vocab}",);
 
-    run_threadlimited(args.max_eval_threads, || {
+    let max_tokens = args.max_tokens.unwrap_or(usize::MAX);
+    let (tcount, elapsed) = run_threadlimited(args.max_eval_threads, || {
+        use std::time::Instant;
+
         context.feed_prompt(&args.prompt, Some(show_token))?;
 
+        let mut tcount = 0;
+        let stime = Instant::now();
         while let Some(token) = context.infer_next_token(&mut do_sample)? {
             show_token(token);
+            tcount += 1;
+            if tcount > max_tokens {
+                break;
+            }
         }
-        Ok(())
+        let etime = Instant::now();
+        Ok((tcount, etime - stime))
     })?;
 
     println!(" [end of text]");
+    let tps = tcount as f64 / (elapsed.as_millis() as f64 / 1000.0);
+    println!(
+        "\n* Completion. Token(s) generated: {tcount}, elapsed time: {:?}, TPS: {tps}",
+        elapsed
+    );
     Ok(())
 }

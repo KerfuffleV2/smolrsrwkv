@@ -20,15 +20,6 @@ pub struct Args {
     #[arg(short = 't', long, default_value = DEFAULT_TOKENIZER)]
     pub tokenizer: String,
 
-    /// Number of threads to use when loading the model.
-    /// Note that this will probably use substantially more memory. 0 means one per logical core.
-    #[arg(long, default_value_t = 4)]
-    pub max_load_threads: usize,
-
-    /// Number of threads to use when evaluating the model. 0 means one per logical core.
-    #[arg(long, default_value_t = 0)]
-    pub max_eval_threads: usize,
-
     /// The higher the temperature, the more random the results.
     #[arg(long, default_value_t = 1.0)]
     pub temperature: f32,
@@ -41,9 +32,22 @@ pub struct Args {
     #[arg(long, default_value_t = false)]
     pub forever: bool,
 
+    /// Maximum tokens to generate.
+    #[arg(short = 'n', long)]
+    pub max_tokens: Option<usize>,
+
     /// Prompt
     #[arg(short = 'p', long, default_value = DEFAULT_PROMPT)]
     pub prompt: String,
+
+    /// Number of threads to use when loading the model.
+    /// Note that this will probably use substantially more memory. 0 means one per logical core.
+    #[arg(long, default_value_t = 4)]
+    pub max_load_threads: usize,
+
+    /// Number of threads to use when evaluating the model. 0 means one per logical core.
+    #[arg(long, default_value_t = 0)]
+    pub max_eval_threads: usize,
 
     /// When enabled will run in full 32bit float mode. This uses a lot of memory is faster.
     /// Otherwise it will run in 8bit quantized mode.

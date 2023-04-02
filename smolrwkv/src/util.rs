@@ -161,25 +161,42 @@ mod dumdot {
         Zip::from(lhs.outer_iter()).par_map_collect(|row| row.dot(rhs))
     }
 
-    pub fn pardot8(lhs: &TensorQ2, rhs: &Array1<ATy>) -> Array1<ATy> {
-        let rx = &lhs.rx;
-        let mx = lhs
-            .mx
+    pub fn pardot8_simple(lhs: &TensorQ2, rhs: &Array1<ATy>) -> Array1<ATy> {
+        let mxy = lhs
+            .mxy
             .broadcast(lhs.weight.raw_dim())
             .expect("Impossible? Broadcast mx failed!");
-        let my = lhs
-            .my
+
+        Zip::from(lhs.weight.rows())
+            .and(lhs.ryx.rows())
+            .and(mxy.rows())
+            .par_map_collect(|row, ryx, mxy| {
+                Zip::from(row)
+                    .and(ryx)
+                    .and(mxy)
+                    .map_collect(|el, ryx, mxy| (((*el as f32) + 0.5) * ryx) + mxy)
+                    .dot(rhs)
+            })
+    }
+    pub fn pardot8(lhs: &TensorQ2, rhs: &Array1<ATy>) -> Array1<ATy> {
+        let mxy = lhs
+            .mxy
             .broadcast(lhs.weight.raw_dim())
-            .expect("Impossible? Broadcast my failed!");
+            .expect("Impossible? Broadcast mx failed!");
 
-        Zip::from(lhs.weight.outer_iter())
-            .and(lhs.ry.outer_iter())
-            .and(my.outer_iter())
-            .and(mx.outer_iter())
-            .par_map_collect(|row, ry, my, mx| {
-                let row = row.map(|el| (*el as f32) + 0.5) * ry * rx + my + mx;
-
-                row.dot(rhs)
+        Zip::from(lhs.weight.rows())
+            .and(lhs.ryx.rows())
+            .and(mxy.rows())
+            .par_map_collect(|row, ryx, mxy| {
+                Zip::from(row)
+                    .and(ryx)
+                    .and(mxy)
+                    .and(rhs)
+                    .fold(0.0, |acc, el, ryx, mxy, rhs| {
+                        let el = (*el as f32) + 0.5;
+                        let dqv = ((el * ryx) + mxy) * rhs;
+                        acc + dqv
+                    })
             })
     }
 
