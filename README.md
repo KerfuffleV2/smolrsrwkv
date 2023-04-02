@@ -14,6 +14,7 @@ Also see the RWKV creator's repository: https://github.com/BlinkDL/ChatRWKV/
 2. Relatively clear/simple code.
 3. Doesn't depend on massive frameworks like Torch or Cuda.
 4. Can use all threads/cores for inference.
+5. Supports float32 and 8bit inference.
 
 Currently, the primary goal here isn't to create an application or library suitable for end users but instead just to provide a
 clear example for other people who are aiming to implement RWKV.
@@ -21,12 +22,12 @@ clear example for other people who are aiming to implement RWKV.
 ## Shortcomings
 
 1. Not optimized for performance.
-2. Only can load models in 32bit mode — expect to require roughly twice as much memory as the model file. Models are stored as `bf16` and converted to `f32` when loaded.
-3. Can (currently) only be configured by the `const` definitions in `src/main.rs` (prompt, model file name, etc).
-4. Can only run inference on CPU.
+2. Can only use 32bit or 8bit mode for models. (Models are always stored as full 32bit).
+3. Can only run inference on CPU.
 
-Because of the second one, it uses a _lot_ of memory. The 3B model uses around 11GB RAM and the 7B one might _just_ fit on a 32GB machine
-you're willing to close other applications or deal with some swapping.
+If loading in 32bit mode it uses a _lot_ of memory. The 3B model uses around 11GB RAM and the 7B one might _just_ fit on a 32GB machine
+you're willing to close other applications or deal with some swapping. Even loading in 8bit mode uses a fair amount of memory, but
+it will drop down once loading has completed.
 
 ## How can I use it?
 
@@ -39,14 +40,14 @@ Also the tokenizer here: https://github.com/BlinkDL/ChatRWKV/blob/main/20B_token
 The first step is to convert the `.pth` to SafeTensors format. Look at `pth_to_safetensors.py` for an example.
 
 After that, you should just be able to `cargo run --release`. You can try compiling without `--release` but
-it's likely everything will be insanely slow.
+it's likely everything will be insanely slow. Also try `cargo run --release -- --help` to see commandline options.
 
-**Note**: The default is to use all logical cores. If you don't want that, set the `RAYON_NUM_THREADS` environment variable.
+**Note**: The default is to use all logical cores, see the commandline options.
 
 ## How it works
 
 Here is a (possibly wrong) high level description of the steps involved in evaluating the model.
-You will need to refer to the source in `src/model.rs` for this to make sense.
+You will need to refer to the source in `smolrwkv/src/simple/model.rs` for this to make sense.
 
 Also, strongly consider reading these first:
 
@@ -103,7 +104,7 @@ The math/array handling here uses the `ndarray` crate. It provides a `.dot` func
 will _never_ actually calculate a matrix-vector multiplication in parallel even though the crate
 claims threading support. Because this calculation is so critical for performance, I ended up writing
 my own function to split the calculation into chunks and run it in parallel. See the functions in the
-`dumdot` module in `src/util.rs`.
+`dumdot` module in `smolrwkv/src/util.rs`.
 
 The fact that you get a list of probabilities back and and no definite "answer" from the model
 seems like a decent counterargument to the idea that LLMs are or could be conscious in some way.
