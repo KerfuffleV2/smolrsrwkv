@@ -3,7 +3,9 @@
 target/
 *.pth
 *.safetensors
+*.txt
 *tokenizer.json
 perf.data*
 *.svg
+.vscode
 Cargo.lock

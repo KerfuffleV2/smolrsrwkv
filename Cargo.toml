@@ -1,19 +1,9 @@
-[package]
-name = "smolrsrwkv"
-authors = ["KerfuffleV2@github"]
-version = "0.2.0"
-edition = "2021"
+[workspace]
+members = ["smolrwkv", "smolrwkv-cli"]
+resolver = "2"
 
-[dependencies]
-safetensors = { version = "0.3", default-features = false }
-tokenizers = { version = "0.13", default-features = false, features = ["onig"] }
-anyhow = "1"
-mmap-rs = "0.5"
-ndarray = { version = "0.15", features = ["rayon"] }
-rayon = "1.7"
-half = "2.2"
-rand = "0.8"
-num-traits = "0.2"
+[workspace.package]
+version = "0.2.0"
 
 [profile.release]
 # Needed for profiling. Shouldn't affect performance.
