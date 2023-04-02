@@ -23,8 +23,9 @@ pub mod rwkvops;
 pub mod util;
 // pub mod modelna;
 
+#[allow(unused_imports)]
 use crate::{
-    simple::{context::RWKVContext, model::RWKV},
+    quantized as Q, simple as S,
     util::{mmap_file, sample_probs},
 };
 
@@ -32,8 +33,8 @@ use crate::{
 const PROMPT: &str = "\nIn a shocking finding, scientist discovered a herd of dragons living in a remote, previously unexplored valley, in Tibet. Even more surprising to the researchers was the fact that the dragons spoke perfect Chinese.";
 
 /// Example of a small model to try.
-const MODEL: &str = "./RWKV-4-Pile-430M-20220808-8066.safetensors";
-// const MODEL: &str = "../../models/RWKV-4-Pile-3B-20221110-ctx4096.safetensors";
+// const MODEL: &str = "./RWKV-4-Pile-430M-20220808-8066.safetensors";
+const MODEL: &str = "../../models/RWKV-4-Pile-3B-20221110-ctx4096.safetensors";
 
 /// Tokenizer definition file. See README.
 const TOKENIZER: &str = "./20B_tokenizer.json";
@@ -56,8 +57,8 @@ fn main() -> Result<()> {
     println!("* Loading tokenizer from: {TOKENIZER}");
     let tokenizer = Tokenizer::from_file(TOKENIZER).map_err(|e| anyhow!(e))?;
     println!("* Loading model from: {MODEL}");
-    let rwkv: RWKV<ModelType> = mmap_file(MODEL)?.try_into()?;
-    let mut context = RWKVContext::new(rwkv, tokenizer);
+    // let mut context = S::context::RWKVContext::new(mmap_file(MODEL)?.try_into()?, tokenizer);
+    let mut context = Q::context::RWKVContext::new(mmap_file(MODEL)?.try_into()?, tokenizer);
 
     // Helper to print out a string without a newline and then flush the console.
     let show_token = |token| {

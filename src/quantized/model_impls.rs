@@ -8,7 +8,7 @@ use crate::simple::{model as S, model_impls as SI};
 use crate::{
     model_traits::*,
     rwkvops::RWKVOps11,
-    util::{pardot, ReqOps},
+    util::{pardot, pardot8, ReqOps},
 };
 
 fn amin<'a, A: AsArray<'a, ATy, Ix2>>(arr: A, axis: Axis) -> Array1<ATy> {
@@ -29,31 +29,31 @@ impl From<Array2<ATy>> for TensorQ2 {
     fn from(mut value: Array2<ATy>) -> Self {
         let shape = value.shape();
         let (mx, my) = if shape[0] > shape[1] {
-            let miny = amin(&value, Axis(1))
+            let miny = amin(&value, Axis(0))
                 .insert_axis(Axis(1))
                 .into_dimensionality::<IxDyn>()
                 .expect("miny1: Less than ideal result!");
             value -= &miny;
-            let minx = amin(&value, Axis(0))
+            let minx = amin(&value, Axis(1))
                 .into_dimensionality::<IxDyn>()
                 .expect("minx0: Less than ideal result!");
             value -= &minx;
             (minx, miny)
         } else {
-            let miny = amin(&value, Axis(0))
+            let miny = amin(&value, Axis(1))
                 .into_dimensionality::<IxDyn>()
                 .expect("miny0: Less than ideal result!");
             value -= &miny;
-            let minx = amin(&value, Axis(1))
+            let minx = amin(&value, Axis(0))
                 .insert_axis(Axis(1))
                 .into_dimensionality::<IxDyn>()
                 .expect("miny1: Less than ideal result!");
             value -= &minx;
             (minx, miny)
         };
-        let mut rx = amax(&value, Axis(0));
+        let mut rx = amax(&value, Axis(1));
         value /= &rx;
-        let mut ry = amax(&value, Axis(1)).insert_axis(Axis(1));
+        let mut ry = amax(&value, Axis(0)).insert_axis(Axis(1));
         value /= &ry;
         rx /= 16.0;
         ry /= 16.0;
@@ -66,13 +66,6 @@ impl From<Array2<ATy>> for TensorQ2 {
             ry,
         }
     }
-}
-
-pub fn pardot8(lhs: &TensorQ2, rhs: &Array1<ATy>) -> Array1<ATy> {
-    let (maxx, maxy, minx, miny) = (&lhs.rx, &lhs.ry, &lhs.mx, &lhs.my);
-    let w = lhs.weight.map(|el| (*el as f32) + 0.5) * maxy * maxx + miny + minx;
-    let w = w.into_dimensionality::<Ix2>().expect("I'm not having fun.");
-    pardot(&w, rhs)
 }
 
 impl RunAttention<ATy> for Attention {

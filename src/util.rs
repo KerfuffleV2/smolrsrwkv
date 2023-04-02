@@ -160,7 +160,7 @@ pub fn sample_probs<T: ReqOps + num_traits::AsPrimitive<f32>>(
 #[allow(dead_code)]
 mod dumdot {
     use super::{Array1, Array2, ArrayView1, ArrayView2, ReqOps, Zip};
-    use ndarray::{parallel::prelude::*, Axis, Data, ScalarOperand};
+    use ndarray::{parallel::prelude::*, Axis, Ix1, Ix2};
 
     /// The simple implementation of parallel matrix-vector multiplication using Rayon.
     /// Presumably this calculates every single row separately which could add some overhead.
@@ -168,20 +168,35 @@ mod dumdot {
         Zip::from(lhs.outer_iter()).par_map_collect(|row| row.dot(rhs))
     }
 
-    // pub fn pardot_mapped<
-    //     'a,
-    //     T: ReqOps + Send,
-    //     FI: Send + Data + ScalarOperand,
-    //     FO: Send + Data + ScalarOperand,
-    //     OT: ReqOps + Send,
-    // >(
-    //     lhs: &'a ArrayView2<FI>,
-    //     rhs: &'a ArrayView1<T>,
-    //     fi: impl Fn(FI) -> OT + Send + 'static,
-    //     fo: impl Fn(FO) -> T + Send + 'static,
-    // ) -> Array1<T> {
-    //     Zip::from(lhs.outer_iter()).par_map_collect(|row| row.mapv(fi).dot(rhs).mapv(fo))
-    // }
+    use crate::quantized::model::{ATy, TensorQ2};
+    // There's some real weird stuff going on in this function...
+    pub fn pardot8(lhs: &TensorQ2, rhs: &Array1<ATy>) -> Array1<ATy> {
+        let (rx, ry, mx, my) = (&lhs.rx, &lhs.ry, &lhs.mx.view(), &lhs.my.view());
+
+        Zip::indexed(lhs.weight.outer_iter()).par_map_collect(|ridx, row| {
+            let ry = ry.row(ridx);
+            let mxv = mx.view();
+            let myv = my.view();
+            #[allow(unused_assignments)]
+            let (mut tmx, mut tmy) = (None, None);
+            let mx = if mx.shape().len() > 1 {
+                tmx = Some(mxv.into_dimensionality::<Ix2>().unwrap());
+                tmx.as_ref().unwrap().row(ridx)
+            } else {
+                mxv.into_dimensionality::<Ix1>().unwrap()
+            };
+            let my = if my.shape().len() > 1 {
+                tmy = Some(myv.into_dimensionality::<Ix2>().unwrap());
+                tmy.as_ref().unwrap().row(ridx)
+            } else {
+                myv.into_dimensionality::<Ix1>().unwrap()
+            };
+
+            let row = row.map(|el| (*el as f32) + 0.5) * ry * rx + my + mx;
+
+            row.dot(rhs)
+        })
+    }
 
     /// Chunked parallel matrix-vector multiplication. However, it requires copying results
     /// around. Intuitively you might think it's better but just eyeballing the speed of the results
@@ -199,3 +214,4 @@ mod dumdot {
     }
 }
 pub use dumdot::pardot;
+pub use dumdot::pardot8;
