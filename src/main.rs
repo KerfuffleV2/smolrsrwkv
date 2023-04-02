@@ -7,22 +7,11 @@ use tokenizers::Tokenizer;
 pub mod quantized;
 pub mod simple;
 
-// FIXME: Make these comments not garbage.
-/// Context related functions. Holds the model state and and last probabilities vector.
-// pub mod context;
-/// Functions related to loading the model from disk.
-// pub mod loader;
-/// The actual model and code related to evaluating it.
-// pub mod model;
-// pub mod model_impls;
-//
 /// Traits representing the components involved in evaluating RWKV.
 pub mod model_traits;
 /// Utility functions.
 pub mod util;
-// pub mod modelna;
 
-#[allow(unused_imports)]
 use crate::{
     quantized as Q, simple as S,
     util::{mmap_file, run_threadlimited, sample_probs},

@@ -1,13 +1,11 @@
 #![allow(clippy::upper_case_acronyms)]
-#![allow(unused_imports, dead_code, unused_variables)]
-use ndarray::{Array1, Array2, ArrayView1, AsArray, Axis, IntoDimension, Ix2, IxDyn};
-use num_traits::{Bounded, One, Zero};
+use ndarray::{Array1, Array2, AsArray, Axis, Ix2, IxDyn};
+use num_traits::{Bounded, Zero};
 
 use crate::quantized::model::*;
-use crate::simple::{model as S, model_impls as SI};
 use crate::{
     model_traits::*,
-    util::{pardot, pardot8, sigmoid, ReqOps},
+    util::{pardot8, sigmoid},
 };
 
 fn amin<'a, A: AsArray<'a, ATy, Ix2>>(arr: A, axis: Axis) -> Array1<ATy> {
