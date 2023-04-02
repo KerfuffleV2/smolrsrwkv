@@ -3,16 +3,10 @@ use ndarray::{Array1, Array2, ArrayD};
 
 use crate::simple::model as S;
 
+/// Attention type (and for items that need a full float).
 pub type ATy = f32;
+/// Quantized type.
 pub type WTy = u8;
-
-///
-/// Uses f32:
-///   time_decay
-///   time_first
-///   emb
-///   Dimension 1 tensors
-///   State
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TensorQ2 {

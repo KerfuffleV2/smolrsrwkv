@@ -170,6 +170,11 @@ pub fn sample_probs<T: ReqOps + num_traits::AsPrimitive<f32>>(
     dist.sample(rng)
 }
 
+pub fn sigmoid<T: ReqOps>(x: Array1<T>) -> Array1<T> {
+    let o = T::one();
+    x.map(|val| o / (o + (-(*val)).exp()))
+}
+
 #[allow(dead_code)]
 mod dumdot {
     use super::{Array1, Array2, ArrayView1, ArrayView2, ReqOps, Zip};

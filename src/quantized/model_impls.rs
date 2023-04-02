@@ -7,8 +7,7 @@ use crate::quantized::model::*;
 use crate::simple::{model as S, model_impls as SI};
 use crate::{
     model_traits::*,
-    rwkvops::RWKVOps11,
-    util::{pardot, pardot8, ReqOps},
+    util::{pardot, pardot8, sigmoid, ReqOps},
 };
 
 fn amin<'a, A: AsArray<'a, ATy, Ix2>>(arr: A, axis: Axis) -> Array1<ATy> {
@@ -93,7 +92,7 @@ impl RunAttention<ATy> for Attention {
             let e = (&self.time.first + &k).mapv(|el| el.exp());
             (last_num + (&e * &v)) / (last_den + e)
         };
-        let rwkv = r.sigmoid() * wkv;
+        let rwkv = sigmoid(r) * wkv;
 
         let num = (&exp_decay * last_num) + (&exp_k * &v);
         let den = (&exp_decay * last_den) + &exp_k;
@@ -122,7 +121,7 @@ impl RunFFN<ATy> for FeedForwardNetwork {
         );
 
         state.set_cm_state(x);
-        r.sigmoid() * &vk
+        sigmoid(r) * &vk
     }
 }
 

@@ -4,8 +4,7 @@ use ndarray::{Array1, ArrayView1, Axis};
 use crate::simple::model::*;
 use crate::{
     model_traits::*,
-    rwkvops::RWKVOps11,
-    util::{pardot, ReqOps},
+    util::{pardot, sigmoid, ReqOps},
 };
 
 impl<T: ReqOps> HasRWKVLayerState<T> for RWKVLayerState<T> {
@@ -67,7 +66,7 @@ impl<T: ReqOps> RunAttention<T> for Attention<T> {
             let e = (&self.time.first + &k).mapv(|el| el.exp());
             (last_num + (&e * &v)) / (last_den + e)
         };
-        let rwkv = r.sigmoid() * wkv;
+        let rwkv = sigmoid(r) * wkv;
 
         let num = (&exp_decay * last_num) + (&exp_k * &v);
         let den = (&exp_decay * last_den) + &exp_k;
@@ -92,7 +91,7 @@ impl<T: ReqOps> RunFFN<T> for FeedForwardNetwork<T> {
         );
 
         state.set_cm_state(x);
-        r.sigmoid() * &vk
+        sigmoid(r) * &vk
     }
 }
 

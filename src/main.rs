@@ -18,7 +18,6 @@ pub mod simple;
 //
 /// Traits representing the components involved in evaluating RWKV.
 pub mod model_traits;
-pub mod rwkvops;
 /// Utility functions.
 pub mod util;
 // pub mod modelna;
@@ -58,6 +57,7 @@ const MAX_EVAL_THREADS: usize = 6;
 type ModelType = f32;
 
 /// Load as a normal float type (32bit)
+#[allow(dead_code)]
 fn load_simple(
     mm: mmap_rs::Mmap,
     tokenizer: Tokenizer,
@@ -66,6 +66,7 @@ fn load_simple(
 }
 
 /// Load 8 bit quantized.
+#[allow(dead_code)]
 fn load_quantized(mm: mmap_rs::Mmap, tokenizer: Tokenizer) -> Result<Q::context::RWKVContext> {
     Ok(Q::context::RWKVContext::new(mm.try_into()?, tokenizer))
 }
