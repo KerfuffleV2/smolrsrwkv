@@ -1,0 +1,16 @@
+[package]
+name = "smolrwkv"
+authors = ["KerfuffleV2@github"]
+version = { workspace = true }
+edition = "2021"
+
+[dependencies]
+safetensors = { version = "0.3", default-features = false }
+tokenizers = { version = "0.13", default-features = false, features = ["onig"] }
+anyhow = "1"
+mmap-rs = "0.5"
+ndarray = { version = "0.15", features = ["rayon"] }
+rayon = "1.7"
+half = "2.2"
+rand = "0.8"
+num-traits = "0.2"

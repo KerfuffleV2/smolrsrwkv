@@ -1,0 +1,15 @@
+[package]
+name = "smolrwkv-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+mmap-rs = "0.5"
+anyhow = "1"
+ndarray = { version = "0.15", features = ["rayon"] }
+rayon = "1.7"
+tokenizers = { version = "0.13", default-features = false, features = ["onig"] }
+rand = "0.8"
+clap = { version = "4.2", features=["derive", "cargo"]}
+
+smolrwkv = { path = "../smolrwkv" }
