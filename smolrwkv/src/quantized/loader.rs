@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Error, Result};
+use anyhow::{anyhow, Error, Ok, Result};
 use mmap_rs::Mmap;
 use rayon::{iter::ParallelIterator, prelude::IntoParallelIterator};
 use safetensors::{tensor::TensorView, SafeTensors};
@@ -103,7 +103,7 @@ impl TryFrom<&SafeTensors<'_>> for RWKV {
                 tm.entry(layer_num)
                     .or_insert_with(Default::default)
                     .insert(name, ktv);
-                Result::<_, Error>::Ok(tm)
+                Ok(tm)
             },
         )?;
 
@@ -137,7 +137,7 @@ impl TryFrom<&SafeTensors<'_>> for RWKV {
                 let lm = tm
                     .get(&Some(lnum as u32))
                     .expect("Impossible layer missing");
-                Result::<_, Error>::Ok(RWKVLayer {
+                Ok(RWKVLayer {
                     ln_tm: S::LayerNorm::try_from((1, lm))?,
                     ln_cm: S::LayerNorm::try_from((2, lm))?,
                     att: Attention::try_from(lm)?,

@@ -49,4 +49,8 @@ pub struct Args {
     /// Otherwise it will run in 8bit quantized mode.
     #[arg(short = 'Q', long)]
     pub no_quantized: bool,
+
+    /// Seed for random numbers. If unset will generate different results each time.
+    #[arg(long, default_value = None)]
+    pub seed: Option<u64>,
 }

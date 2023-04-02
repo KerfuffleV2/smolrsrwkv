@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Error, Result};
+use anyhow::{anyhow, Error, Ok, Result};
 use mmap_rs::Mmap;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use safetensors::{tensor::TensorView, SafeTensors};
@@ -137,7 +137,7 @@ impl<T: ConvertBF16Tensor> TryFrom<&SafeTensors<'_>> for RWKV<T> {
                 tm.entry(layer_num)
                     .or_insert_with(Default::default)
                     .insert(name, ktv);
-                Result::<_, Error>::Ok(tm)
+                Ok(tm)
             },
         )?;
 
@@ -171,7 +171,7 @@ impl<T: ConvertBF16Tensor> TryFrom<&SafeTensors<'_>> for RWKV<T> {
                 let lm = tm
                     .get(&Some(lnum as u32))
                     .expect("Impossible layer missing");
-                Result::<_, Error>::Ok(RWKVLayer {
+                Ok(RWKVLayer {
                     ln_tm: LayerNorm::try_from((1, lm))?,
                     ln_cm: LayerNorm::try_from((2, lm))?,
                     att: Attention::try_from(lm)?,
