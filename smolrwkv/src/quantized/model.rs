@@ -1,5 +1,5 @@
 #![allow(clippy::upper_case_acronyms)]
-use ndarray::{Array2, ArrayD};
+use ndarray::{Array1, Array2, ArrayD};
 
 use crate::simple::model as S;
 
@@ -11,8 +11,10 @@ pub type WTy = u8;
 #[derive(Debug, Clone, PartialEq)]
 pub struct TensorQ2 {
     pub weight: Array2<WTy>,
-    pub mxy: ArrayD<ATy>,
-    pub ryx: Array2<ATy>,
+    pub mx: ArrayD<ATy>,
+    pub my: ArrayD<ATy>,
+    pub rx: Array1<ATy>,
+    pub ry: Array2<ATy>,
 }
 
 /// Corresponds to:

@@ -161,42 +161,52 @@ mod dumdot {
         Zip::from(lhs.outer_iter()).par_map_collect(|row| row.dot(rhs))
     }
 
-    pub fn pardot8_simple(lhs: &TensorQ2, rhs: &Array1<ATy>) -> Array1<ATy> {
-        let mxy = lhs
-            .mxy
+    pub fn pardot8(lhs: &TensorQ2, rhs: &Array1<ATy>) -> Array1<ATy> {
+        let rx = &lhs.rx;
+        let mx = lhs
+            .mx
+            .broadcast(lhs.weight.raw_dim())
+            .expect("Impossible? Broadcast mx failed!");
+        let my = lhs
+            .my
             .broadcast(lhs.weight.raw_dim())
             .expect("Impossible? Broadcast mx failed!");
 
         Zip::from(lhs.weight.rows())
-            .and(lhs.ryx.rows())
-            .and(mxy.rows())
-            .par_map_collect(|row, ryx, mxy| {
-                Zip::from(row)
-                    .and(ryx)
-                    .and(mxy)
-                    .map_collect(|el, ryx, mxy| (((*el as f32) + 0.5) * ryx) + mxy)
-                    .dot(rhs)
+            .and(lhs.ry.rows())
+            .and(my.rows())
+            .and(mx.rows())
+            .par_map_collect(|row, ry, mx, my| {
+                (row.map(|el| *el as f32 + 0.5) * ry[0] * rx + my + mx).dot(rhs)
             })
     }
-    pub fn pardot8(lhs: &TensorQ2, rhs: &Array1<ATy>) -> Array1<ATy> {
-        let mxy = lhs
-            .mxy
+
+    // Sadly seems to be slower.
+    pub fn pardot8_manualdot(lhs: &TensorQ2, rhs: &Array1<ATy>) -> Array1<ATy> {
+        let rx = &lhs.rx;
+        let mx = lhs
+            .mx
+            .broadcast(lhs.weight.raw_dim())
+            .expect("Impossible? Broadcast mx failed!");
+        let my = lhs
+            .my
             .broadcast(lhs.weight.raw_dim())
             .expect("Impossible? Broadcast mx failed!");
 
         Zip::from(lhs.weight.rows())
-            .and(lhs.ryx.rows())
-            .and(mxy.rows())
-            .par_map_collect(|row, ryx, mxy| {
-                Zip::from(row)
-                    .and(ryx)
-                    .and(mxy)
-                    .and(rhs)
-                    .fold(0.0, |acc, el, ryx, mxy, rhs| {
+            .and(lhs.ry.rows())
+            .and(my.rows())
+            .and(mx.rows())
+            .par_map_collect(|row, ry, mx, my| {
+                let ry = ry[0];
+                Zip::from(row).and(rx).and(mx).and(my).and(rhs).fold(
+                    0.0,
+                    |acc, el, rx, mx, my, rhs| {
                         let el = (*el as f32) + 0.5;
-                        let dqv = ((el * ryx) + mxy) * rhs;
+                        let dqv = ((el * (ry * rx)) + (mx + my)) * rhs;
                         acc + dqv
-                    })
+                    },
+                )
             })
     }
 

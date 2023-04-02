@@ -86,7 +86,7 @@ impl TryFrom<&SafeTensors<'_>> for RWKV {
         // could be in any order. This means if you're loading from a spinny disky it could require
         // seeking all around the file rather than just reading sequentially.
 
-        println!("* Discovering model structure.");
+        println!("* Discovering model structure for model type Q8.");
         let tm = tensors.tensors().into_iter().try_fold(
             HashMap::<Option<u32>, HashMap<String, TensorView>>::new(),
             |mut tm, (mut name, tensor)| {
