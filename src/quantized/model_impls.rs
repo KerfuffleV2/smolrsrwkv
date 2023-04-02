@@ -29,41 +29,42 @@ impl From<Array2<ATy>> for TensorQ2 {
     fn from(mut value: Array2<ATy>) -> Self {
         let shape = value.shape();
         let (mx, my) = if shape[0] > shape[1] {
-            let miny = amin(&value, Axis(0))
-                .insert_axis(Axis(1))
-                .into_dimensionality::<IxDyn>()
-                .expect("miny1: Less than ideal result!");
+            let miny = amin(&value, Axis(0)).insert_axis(Axis(1));
             value -= &miny;
-            let minx = amin(&value, Axis(1))
+            let miny = miny
                 .into_dimensionality::<IxDyn>()
-                .expect("minx0: Less than ideal result!");
+                .expect("miny failed dimensionality conversion!");
+            let minx = amin(&value, Axis(1));
             value -= &minx;
+            let minx = minx
+                .into_dimensionality::<IxDyn>()
+                .expect("minx failed dimensionality conversion!");
             (minx, miny)
         } else {
-            let miny = amin(&value, Axis(1))
-                .into_dimensionality::<IxDyn>()
-                .expect("miny0: Less than ideal result!");
+            let miny = amin(&value, Axis(1));
             value -= &miny;
-            let minx = amin(&value, Axis(0))
-                .insert_axis(Axis(1))
+            let miny = miny
                 .into_dimensionality::<IxDyn>()
-                .expect("miny1: Less than ideal result!");
+                .expect("miny failed dimensionality conversion!");
+            let minx = amin(&value, Axis(0)).insert_axis(Axis(1));
             value -= &minx;
+            let minx = minx
+                .into_dimensionality::<IxDyn>()
+                .expect("minx failed dimensionality conversion!");
+
             (minx, miny)
         };
-        let mut rx = amax(&value, Axis(1));
+        let rx = amax(&value, Axis(1));
         value /= &rx;
-        let mut ry = amax(&value, Axis(0)).insert_axis(Axis(1));
+        let ry = amax(&value, Axis(0)).insert_axis(Axis(1));
         value /= &ry;
-        rx /= 16.0;
-        ry /= 16.0;
-        let out = value.mapv(|el| (el * 256.0).floor().clamp(0.0, 256.0) as u8);
+        let weight = value.mapv(|el| (el * 256.0).floor().clamp(0.0, 255.0) as u8);
         Self {
-            weight: out,
+            weight,
             mx,
             my,
-            rx,
-            ry,
+            rx: rx / 16.0,
+            ry: ry / 16.0,
         }
     }
 }

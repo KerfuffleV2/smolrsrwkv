@@ -33,8 +33,8 @@ use crate::{
 const PROMPT: &str = "\nIn a shocking finding, scientists discovered a herd of dragons living in a remote, previously unexplored valley, in Tibet. Even more surprising to the researchers was the fact that the dragons spoke perfect Chinese.";
 
 /// Example of a small model to try.
-// const MODEL: &str = "./RWKV-4-Pile-430M-20220808-8066.safetensors";
-const MODEL: &str = "../../models/RWKV-4-Pile-3B-20221110-ctx4096.safetensors";
+const MODEL: &str = "./RWKV-4-Pile-430M-20220808-8066.safetensors";
+// const MODEL: &str = "../../models/RWKV-4-Pile-3B-20221110-ctx4096.safetensors";
 
 /// Tokenizer definition file. See README.
 const TOKENIZER: &str = "./20B_tokenizer.json";
@@ -46,8 +46,8 @@ const TEMPERATURE: f32 = 1.0;
 /// Here's a better explanation of top_p than I could ever write: https://huggingface.co/blog/how-to-generate
 const TOP_P: f32 = 0.85;
 
-/// Number of threads to use when loading the model.
-const MAX_LOAD_THREADS: usize = 4;
+/// Number of threads to use when loading the model. Note that this will probably use substantially more memory.
+const MAX_LOAD_THREADS: usize = 6;
 /// Number of threads to use when evaluating the model. 0 means one per logical core.
 const MAX_EVAL_THREADS: usize = 6;
 
@@ -57,6 +57,7 @@ const MAX_EVAL_THREADS: usize = 6;
 /// `f32` and `f64`
 type ModelType = f32;
 
+/// Load as a normal float type (32bit)
 fn load_simple(
     mm: mmap_rs::Mmap,
     tokenizer: Tokenizer,
@@ -64,6 +65,7 @@ fn load_simple(
     Ok(S::context::RWKVContext::new(mm.try_into()?, tokenizer))
 }
 
+/// Load 8 bit quantized.
 fn load_quantized(mm: mmap_rs::Mmap, tokenizer: Tokenizer) -> Result<Q::context::RWKVContext> {
     Ok(Q::context::RWKVContext::new(mm.try_into()?, tokenizer))
 }

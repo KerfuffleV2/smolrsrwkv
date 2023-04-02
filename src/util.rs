@@ -173,7 +173,8 @@ pub fn sample_probs<T: ReqOps + num_traits::AsPrimitive<f32>>(
 #[allow(dead_code)]
 mod dumdot {
     use super::{Array1, Array2, ArrayView1, ArrayView2, ReqOps, Zip};
-    use ndarray::{parallel::prelude::*, Axis, Ix1, Ix2};
+    use crate::quantized::model::{ATy, TensorQ2};
+    use ndarray::{parallel::prelude::*, Axis};
 
     /// The simple implementation of parallel matrix-vector multiplication using Rayon.
     /// Presumably this calculates every single row separately which could add some overhead.
@@ -181,34 +182,26 @@ mod dumdot {
         Zip::from(lhs.outer_iter()).par_map_collect(|row| row.dot(rhs))
     }
 
-    use crate::quantized::model::{ATy, TensorQ2};
-    // There's some real weird stuff going on in this function...
     pub fn pardot8(lhs: &TensorQ2, rhs: &Array1<ATy>) -> Array1<ATy> {
-        let (rx, ry, mx, my) = (&lhs.rx, &lhs.ry, &lhs.mx.view(), &lhs.my.view());
+        let rx = &lhs.rx;
+        let mx = lhs
+            .mx
+            .broadcast(lhs.weight.raw_dim())
+            .expect("Impossible? Broadcast mx failed!");
+        let my = lhs
+            .my
+            .broadcast(lhs.weight.raw_dim())
+            .expect("Impossible? Broadcast my failed!");
 
-        Zip::indexed(lhs.weight.outer_iter()).par_map_collect(|ridx, row| {
-            let ry = ry.row(ridx);
-            let mxv = mx.view();
-            let myv = my.view();
-            #[allow(unused_assignments)]
-            let (mut tmx, mut tmy) = (None, None);
-            let mx = if mx.shape().len() > 1 {
-                tmx = Some(mxv.into_dimensionality::<Ix2>().unwrap());
-                tmx.as_ref().unwrap().row(ridx)
-            } else {
-                mxv.into_dimensionality::<Ix1>().unwrap()
-            };
-            let my = if my.shape().len() > 1 {
-                tmy = Some(myv.into_dimensionality::<Ix2>().unwrap());
-                tmy.as_ref().unwrap().row(ridx)
-            } else {
-                myv.into_dimensionality::<Ix1>().unwrap()
-            };
+        Zip::from(lhs.weight.outer_iter())
+            .and(lhs.ry.outer_iter())
+            .and(my.outer_iter())
+            .and(mx.outer_iter())
+            .par_map_collect(|row, ry, my, mx| {
+                let row = row.map(|el| (*el as f32) + 0.5) * ry * rx + my + mx;
 
-            let row = row.map(|el| (*el as f32) + 0.5) * ry * rx + my + mx;
-
-            row.dot(rhs)
-        })
+                row.dot(rhs)
+            })
     }
 
     /// Chunked parallel matrix-vector multiplication. However, it requires copying results

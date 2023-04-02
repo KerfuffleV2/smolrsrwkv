@@ -43,12 +43,16 @@ impl TryFrom<&LM<'_>> for Attention {
     type Error = Error;
 
     fn try_from(lm: &LM<'_>) -> Result<Self> {
+        let key_weight = gk(lm, "att.key.weight", ATy::tensor_to_array2)??.into();
+        let value_weight = gk(lm, "att.value.weight", ATy::tensor_to_array2)??.into();
+        let output_weight = gk(lm, "att.output.weight", ATy::tensor_to_array2)??.into();
+        let receptance_weight = gk(lm, "att.receptance.weight", ATy::tensor_to_array2)??.into();
         Ok(Attention {
-            key_weight: gk(lm, "att.key.weight", ATy::tensor_to_array2)??.into(),
-            value_weight: gk(lm, "att.value.weight", ATy::tensor_to_array2)??.into(),
-            output_weight: gk(lm, "att.output.weight", ATy::tensor_to_array2)??.into(),
-            receptance_weight: gk(lm, "att.receptance.weight", ATy::tensor_to_array2)??.into(),
             time: S::AttTime::try_from(lm)?,
+            key_weight,
+            value_weight,
+            output_weight,
+            receptance_weight,
         })
     }
 }
@@ -57,11 +61,14 @@ impl TryFrom<&LM<'_>> for FeedForwardNetwork {
     type Error = Error;
 
     fn try_from(lm: &LM<'_>) -> Result<Self> {
+        let key_weight = gk(lm, "ffn.key.weight", ATy::tensor_to_array2)??.into();
+        let value_weight = gk(lm, "ffn.value.weight", ATy::tensor_to_array2)??.into();
+        let receptance_weight = gk(lm, "ffn.receptance.weight", ATy::tensor_to_array2)??.into();
         Ok(FeedForwardNetwork {
-            key_weight: gk(lm, "ffn.key.weight", ATy::tensor_to_array2)??.into(),
-            value_weight: gk(lm, "ffn.value.weight", ATy::tensor_to_array2)??.into(),
-            receptance_weight: gk(lm, "ffn.receptance.weight", ATy::tensor_to_array2)??.into(),
             time: S::FFNTime::try_from(lm)?,
+            key_weight,
+            value_weight,
+            receptance_weight,
         })
     }
 }
