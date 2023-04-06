@@ -4,7 +4,8 @@ use anyhow::{anyhow, Result};
 use mmap_rs::{MmapFlags, MmapOptions};
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2, NdFloat, ScalarOperand, Zip};
 use num_traits::FromPrimitive;
-use safetensors::tensor::TensorView;
+
+use crate::loader::{TensorData, TensorType};
 
 /// Basically all the math stuff ndarray supports and we need for evaluating
 /// RWKV
@@ -23,28 +24,26 @@ impl ReqOps for f64 {}
 /// You could implement it for f64, but there's no practical reason to do so. Unfortunately,
 /// you can't easily implement it for smaller types (16bit, 8bit, etc).
 pub trait ConvertBF16Tensor: ReqOps {
-    fn tensor_to_array1(tensor: &TensorView<'_>) -> Array1<Self>;
-    fn tensor_to_array2(tensor: &TensorView<'_>) -> Result<Array2<Self>>;
+    fn tensor_to_array1(tensor: &TensorData<'_>) -> Array1<Self>;
+    fn tensor_to_array2(tensor: &TensorData<'_>) -> Result<Array2<Self>>;
 }
 
 impl ConvertBF16Tensor for f32 {
-    fn tensor_to_array1(tensor: &TensorView<'_>) -> Array1<Self> {
+    fn tensor_to_array1(tensor: &TensorData<'_>) -> Array1<Self> {
         Array1::from(bf16_tensor_to_f32(tensor))
     }
 
-    fn tensor_to_array2(tensor: &TensorView<'_>) -> Result<Array2<Self>> {
+    fn tensor_to_array2(tensor: &TensorData<'_>) -> Result<Array2<Self>> {
         // Squeeze all the things.
         let shp = tensor
-            .shape()
+            .shape
             .iter()
             .copied()
             .filter(|i| i != &1)
             .collect::<Vec<usize>>();
         anyhow::ensure!(shp.len() == 2, "Bad shape");
-        Ok(Array2::from_shape_vec(
-            (shp[0], shp[1]),
-            bf16_tensor_to_f32(tensor),
-        )?)
+        Array2::from_shape_vec((shp[0], shp[1]), bf16_tensor_to_f32(tensor))
+            .map_err(|e| anyhow!("Failed to build tensor in tensor_to_array2: {e}"))
     }
 }
 
@@ -76,18 +75,14 @@ where
         .install(f)
 }
 
-/// Helper function to convert a SafeTensors TensorView into a flat
+/// Helper function to convert a SafeTensors TensorData into a flat
 /// vector of f32. The number of dimensions doesn't matter at this
 /// point.
-fn bf16_tensor_to_f32(tensor: &TensorView<'_>) -> Vec<f32> {
-    assert_eq!(
-        tensor.dtype(),
-        safetensors::Dtype::BF16,
-        "Expected BF16 tensor"
-    );
-    assert_ne!(tensor.data().len() & 1, 1, "Odd size for BF16 tensor input");
+fn bf16_tensor_to_f32(tensor: &TensorData<'_>) -> Vec<f32> {
+    assert_eq!(tensor.dtype, TensorType::BFloat16, "Expected BF16 tensor");
+    assert_ne!(tensor.data.len() & 1, 1, "Odd size for BF16 tensor input");
     tensor
-        .data()
+        .data
         .chunks(2)
         .map(|i| half::bf16::from_le_bytes([i[0], i[1]]).to_f32())
         .collect::<Vec<f32>>()

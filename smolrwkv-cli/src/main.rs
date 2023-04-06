@@ -5,6 +5,7 @@ use rand::{rngs::StdRng, SeedableRng};
 use tokenizers::Tokenizer;
 
 use smolrwkv::{
+    loader::TensorDataMap,
     quantized as Q, simple as S,
     util::{mmap_file, run_threadlimited, sample_probs},
 };
@@ -31,14 +32,16 @@ fn main() -> Result<()> {
     let tokenizer = Tokenizer::from_file(tokenizerfn).map_err(|e| anyhow!(e))?;
     println!("* Loading model from: {modelfn}");
     let mm = mmap_file(modelfn)?;
+    let tdm: TensorDataMap<'_> = (modelfn.clone(), mm.as_slice()).try_into()?;
+
     let mut context = run_threadlimited(args.max_load_threads, move || {
         anyhow::Ok(if args.no_quantized {
             Ctx::FloatCtx(S::context::RWKVContext::<FloatType>::new(
-                mm.try_into()?,
+                tdm.try_into()?,
                 tokenizer,
             ))
         } else {
-            Ctx::QuantCtx(Q::context::RWKVContext::new(mm.try_into()?, tokenizer))
+            Ctx::QuantCtx(Q::context::RWKVContext::new(tdm.try_into()?, tokenizer))
         })
     })?;
 

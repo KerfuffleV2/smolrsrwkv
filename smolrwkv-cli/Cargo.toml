@@ -2,6 +2,7 @@
 name = "smolrwkv-cli"
 version = "0.1.0"
 edition = "2021"
+resolver = "2"
 
 [dependencies]
 mmap-rs = "0.5"

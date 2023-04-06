@@ -9,3 +9,6 @@ pub mod model_traits;
 
 /// Utility functions.
 pub mod util;
+
+/// Functions related to loading models.
+pub mod loader;

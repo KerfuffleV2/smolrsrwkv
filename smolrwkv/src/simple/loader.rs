@@ -1,46 +1,32 @@
-use anyhow::{anyhow, Error, Ok, Result};
-use mmap_rs::Mmap;
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
-use safetensors::{tensor::TensorView, SafeTensors};
-
-use ndarray::Axis;
 use std::{
     collections::HashMap,
     io::{stdout, Write},
 };
 
-use crate::{model_traits::RunLayerNorm, simple::model::*, util::ConvertBF16Tensor};
+use anyhow::{anyhow, Error, Ok, Result};
+use ndarray::Axis;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
+
+use crate::{
+    loader::{TensorData, TensorDataMap},
+    model_traits::RunLayerNorm,
+    simple::model::*,
+    util::ConvertBF16Tensor,
+};
 
 /// LayerMap helper type to avoid repetition.
-type LM<'a> = HashMap<String, safetensors::tensor::TensorView<'a>>;
+type LM<'a> = HashMap<String, TensorData<'a>>;
 
 /// Helper function for extracting a tensor from the HashMap by string key.
-/// Takes a closure to convert from the SafeTensors TensorView struct to
-/// a usable format.
-fn gk<O>(m: &LM, k: &str, f: impl Fn(&TensorView) -> O) -> Result<O> {
+/// Takes a closure to convert from the TensorData struct to a usable format.
+fn gk<O>(m: &LM, k: &str, f: impl Fn(&TensorData<'_>) -> O) -> Result<O> {
     m.get(k).map(f).ok_or_else(|| anyhow!("Bad format"))
-}
-
-/// Convert from a mmap (just a chunk of bytes) to the RWKV<T> struct
-/// Requires the ConvertBF16Tensor trait (from `crate::utils`) due to
-/// tensors being stored in bfloat16 format which isn't suitable for
-/// actual calculation.
-impl<T: ConvertBF16Tensor> TryFrom<Mmap> for RWKV<T> {
-    type Error = Error;
-
-    fn try_from(value: Mmap) -> std::result::Result<Self, Self::Error> {
-        // Note that this actually just reads the metadata and not
-        // the tensor data itself.
-        let st = SafeTensors::deserialize(value.as_slice())?;
-        // Use the TryFrom instance to convert from SafeTensors to RWKV<T>.
-        (&st).try_into()
-    }
 }
 
 impl<T: ConvertBF16Tensor> TryFrom<(usize, &LM<'_>)> for LayerNorm<T> {
     type Error = Error;
 
-    fn try_from((idx, lm): (usize, &HashMap<String, TensorView<'_>>)) -> Result<Self> {
+    fn try_from((idx, lm): (usize, &HashMap<String, TensorData<'_>>)) -> Result<Self> {
         Ok(Self {
             bias: T::tensor_to_array1(
                 lm.get(&format!("ln{idx}.bias"))
@@ -107,22 +93,22 @@ impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for FeedForwardNetwork<T> {
     }
 }
 
-impl<T: ConvertBF16Tensor> TryFrom<&SafeTensors<'_>> for RWKV<T> {
+impl<T: ConvertBF16Tensor> TryFrom<TensorDataMap<'_>> for RWKV<T> {
     type Error = Error;
 
-    fn try_from(tensors: &SafeTensors<'_>) -> Result<Self> {
+    fn try_from(tensors: TensorDataMap<'_>) -> Result<Self> {
         let mut n_layers = 0usize;
         // This builds a HashMap of HashMaps.
         // The top level is None for non-layer tensors like "emb.weight" and
-        // Some(layer_index) for each layer. The second level is just String key to TensorView.
+        // Some(layer_index) for each layer. The second level is just String key to TensorData.
         //
         // Worth noting is the fact that the model file gets mmaped but the actual keys/values
         // could be in any order. This means if you're loading from a spinny disky it could require
         // seeking all around the file rather than just reading sequentially.
 
         println!("* Discovering model structure for model type float32.");
-        let tm = tensors.tensors().into_iter().try_fold(
-            HashMap::<Option<u32>, HashMap<String, TensorView>>::new(),
+        let tm = tensors.into_iter().try_fold(
+            HashMap::<Option<u32>, HashMap<String, TensorData<'_>>>::new(),
             |mut tm, (mut name, tensor)| {
                 let (layer_num, ktv) = if let Some(rest) = name.strip_prefix("blocks.") {
                     let result = rest.split_once('.').ok_or_else(|| anyhow!("Bad format"))?;

@@ -3,6 +3,11 @@ name = "smolrwkv"
 authors = ["KerfuffleV2@github"]
 version = { workspace = true }
 edition = "2021"
+resolver = "2"
+
+[features]
+default = ["torch"]
+torch = ["dep:repugnant-pickle"]
 
 [dependencies]
 safetensors = { version = "0.3", default-features = false }
@@ -14,3 +19,9 @@ rayon = "1.7"
 half = "2.2"
 rand = "0.8"
 num-traits = "0.2"
+
+[dependencies.repugnant-pickle]
+git = "https://github.com/kerfufflev2/repugnant-pickle"
+tag = "v0.0.1"
+features = ["torch"]
+optional = true

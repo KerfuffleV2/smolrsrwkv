@@ -12,7 +12,8 @@ const DEFAULT_TOKENIZER: &str = "./20B_tokenizer.json";
 #[derive(Clone, Debug, Parser)]
 /// Simple commandline interface to RWKV
 pub struct Args {
-    /// Model filename (must be in  SafeTensors format)
+    /// Model filename. Should end in ".st", ".safetensors", ".pt" or ".pth". For the last two,
+    /// the torch feature will need to be enabled.
     #[arg(short = 'm', long, default_value = DEFAULT_MODEL)]
     pub model: String,
 
@@ -49,8 +50,8 @@ pub struct Args {
     #[arg(long, default_value_t = 0)]
     pub max_eval_threads: usize,
 
-    /// When enabled will run in full 32bit float mode. This uses a lot of memory is faster.
-    /// Otherwise it will run in 8bit quantized mode.
+    /// When enabled will run in full 32bit float mode. This uses a lot of memory but runs about
+    /// twice as fast as quantized mode. By default the CLI will run in 8bit quantized mode.
     #[arg(short = 'Q', long)]
     pub no_quantized: bool,
 

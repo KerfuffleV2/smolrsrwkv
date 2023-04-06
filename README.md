@@ -37,7 +37,14 @@ You will need to download this file (about 820MB): https://huggingface.co/BlinkD
 
 Also the tokenizer here: https://github.com/BlinkDL/ChatRWKV/blob/main/20B_tokenizer.json
 
-The first step is to convert the `.pth` to SafeTensors format. Look at `pth_to_safetensors.py` for an example.
+You can optionally convert the `.pth` model file to SafeTensors format. Look at
+[`utils/pth_to_safetensors.py`](utils/pth_to_safetensors.py) for an example.
+
+PyTorch model files _can_ be loaded directly now: If the files ends with `.pt` or `.pth` it will be loaded as a PyTorch
+model. If it ends with `.st` or `.safetensors` then it will be loaded as SafeTensors. ***Note***: The PyTorch support
+is currently experimental and may not function correctly. You will likely just immediately get an error if there is a problem
+so it shouldn't be dangerous to try that approach. If you want, you can disable the `torch` feature and only build
+support for SafeTensors format files.
 
 After that, you should just be able to `cargo run --release`. You can try compiling without `--release` but
 it's likely everything will be insanely slow. Also try `cargo run --release -- --help` to see commandline options.
