@@ -160,7 +160,7 @@ pub trait ParDot {
 impl<T: ReqOps> ParDot for Array2<T> {
     type Output = Array1<T>;
     fn pardot(&self, rhs: &Self::Output) -> Self::Output {
-        dumdot::pardotv_chunked(&self.view(), &rhs.view())
+        dumdot::pardotv_simple(&self.view(), &rhs.view())
     }
 }
 
@@ -199,7 +199,7 @@ mod dumdot {
             .and(my.rows())
             .and(mx.rows())
             .par_map_collect(|row, ry, mx, my| {
-                (row.map(|el| *el as f32 + 0.5) * ry[0] * rx + my + mx).dot(rhs)
+                (row.map(|el| *el as ATy + 0.5) * ry[0] * rx + my + mx).dot(rhs)
             })
     }
 
@@ -224,7 +224,7 @@ mod dumdot {
                 Zip::from(row).and(rx).and(mx).and(my).and(rhs).fold(
                     0.0,
                     |acc, el, rx, mx, my, rhs| {
-                        let el = (*el as f32) + 0.5;
+                        let el = (*el as ATy) + 0.5;
                         let dqv = ((el * (ry * rx)) + (mx + my)) * rhs;
                         acc + dqv
                     },
