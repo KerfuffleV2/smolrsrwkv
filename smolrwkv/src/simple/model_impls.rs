@@ -1,25 +1,33 @@
 #![allow(clippy::upper_case_acronyms)]
-use ndarray::{Array1, ArrayView1, Axis};
+use ndarray::{Array1, ArrayView1, Axis, Zip};
 
 use crate::simple::model::*;
 use crate::{
     model_traits::*,
-    util::{pardot, sigmoid, ReqOps},
+    util::{sigmoid, ParDot, ReqOps},
 };
 
 impl<T: ReqOps> HasRWKVLayerState<T> for RWKVLayerState<T> {
     type State = Array1<T>;
 
-    /// Get time mixing stating as (last_x, num, den).
-    fn get_tm_state(&self) -> (&Self::State, &Self::State, &Self::State) {
-        (&self.tm_last_x, &self.tm_num, &self.tm_den)
+    /// Get time mixing stating as (last_x, aa, bb, pp).
+    /// What does aa, bb, pp mean? Who knows!
+    fn get_tm_state(&self) -> (&Self::State, &Self::State, &Self::State, &Self::State) {
+        (&self.tm_last_x, &self.tm_aa, &self.tm_bb, &self.tm_pp)
     }
 
     /// Set time mixing state.
-    fn set_tm_state(&mut self, tm_last_x: Self::State, tm_num: Self::State, tm_den: Self::State) {
+    fn set_tm_state(
+        &mut self,
+        tm_last_x: Self::State,
+        aa: Self::State,
+        bb: Self::State,
+        pp: Self::State,
+    ) {
         self.tm_last_x = tm_last_x;
-        self.tm_num = tm_num;
-        self.tm_den = tm_den;
+        self.tm_aa = aa;
+        self.tm_bb = bb;
+        self.tm_pp = pp;
     }
 
     /// Get channel mixing state.
@@ -42,56 +50,69 @@ impl<T: ReqOps> RunMix for Mix<T> {
         x: X,
         last_x: LX,
     ) -> Self::Out {
-        (&x.into() * &self.0) + (&last_x.into() * (T::one() - &self.0))
+        let (x, time_mix, last_x) = (&x.into(), &self.0, &last_x.into());
+        x * time_mix + last_x * (T::one() - time_mix)
     }
 }
 
-impl<T: ReqOps> RunAttention<T> for Attention<T> {
+impl<T: ReqOps, WT: ParDot<Output = Array1<T>>> RunAttention<T> for Attention<T, WT> {
     type State = Array1<T>;
     fn time_mixing<S: HasRWKVLayerState<T, State = Self::State>>(
         &self,
         x: Self::State,
         state: &mut S,
     ) -> Self::State {
-        let (last_x, last_num, last_den) = state.get_tm_state();
+        let (tm_last_x, aa, bb, pp) = state.get_tm_state();
 
-        let k = pardot(&self.key_weight, &self.time.mix_k.mix(&x, last_x));
-        let v = pardot(&self.value_weight, &self.time.mix_v.mix(&x, last_x));
-        let r = pardot(&self.receptance_weight, &self.time.mix_r.mix(&x, last_x));
+        let xk = &self.time.mix_k.mix(&x, tm_last_x);
+        let xv = &self.time.mix_v.mix(&x, tm_last_x);
+        let xr = &self.time.mix_r.mix(&x, tm_last_x);
 
-        let exp_k = k.mapv(|el| el.exp());
-        let exp_decay = self.time.decay.view();
+        let r = sigmoid(self.receptance_weight.pardot(xr));
+        let k = self.key_weight.pardot(xk);
+        let v = self.value_weight.pardot(xv);
 
-        let wkv = {
-            let e = (&self.time.first + &k).mapv(|el| el.exp());
-            (last_num + (&e * &v)) / (last_den + e)
-        };
-        let rwkv = sigmoid(r) * wkv;
+        let ww = &self.time.first + &k;
+        let qq = Zip::from(&ww).and(pp).map_collect(|el1, el2| el1.max(*el2));
+        let e1 = (pp - &qq).mapv(T::exp);
+        let e2 = (ww - qq).mapv(T::exp);
+        let a = &e1 * aa + &e2 * &v;
+        let b = &e1 * bb + e2;
 
-        let num = (&exp_decay * last_num) + (&exp_k * &v);
-        let den = (&exp_decay * last_den) + &exp_k;
-        state.set_tm_state(x, num, den);
-        pardot(&self.output_weight, &rwkv)
+        let wkv = a / b;
+        let ww = pp + &self.time.decay;
+        let qq = Zip::from(&ww).and(&k).map_collect(|el1, el2| el1.max(*el2));
+        let e1 = (ww - &qq).mapv(T::exp);
+        let e2 = (k - &qq).mapv(T::exp);
+
+        let new_aa = &e1 * aa + &e2 * v;
+        let new_bb = e1 * bb + e2;
+        let new_pp = qq;
+        state.set_tm_state(x, new_aa, new_bb, new_pp);
+        self.output_weight.pardot(&(r * wkv))
     }
 }
 
-impl<T: ReqOps> RunFFN<T> for FeedForwardNetwork<T> {
+impl<T: ReqOps, WT: ParDot<Output = Array1<T>>> RunFFN<T> for FeedForwardNetwork<T, WT> {
     type State = Array1<T>;
     fn channel_mixing<S: HasRWKVLayerState<T, State = Self::State>>(
         &self,
         x: Self::State,
         state: &mut S,
     ) -> Self::State {
-        let last_x = state.get_cm_state();
-        let k = pardot(&self.key_weight, &self.time.mix_k.mix(&x, last_x));
-        let r = pardot(&self.receptance_weight, &self.time.mix_r.mix(&x, last_x));
-        let vk = pardot(
-            &self.value_weight,
-            &k.mapv(|val| val.max(T::zero()).powi(2)),
-        );
+        let cm_last_x = state.get_cm_state();
+        let zero = T::zero();
+
+        let xk = &self.time.mix_k.mix(&x, cm_last_x);
+        let xr = &self.time.mix_r.mix(&x, cm_last_x);
+        let r = sigmoid(self.receptance_weight.pardot(xr));
+
+        let mut k = self.key_weight.pardot(xk);
+        // ReLU + square
+        k.mapv_inplace(|el| zero.max(el).powi(2));
 
         state.set_cm_state(x);
-        sigmoid(r) * &vk
+        r * self.value_weight.pardot(&k)
     }
 }
 
@@ -107,7 +128,7 @@ impl<T: ReqOps> RunLayerNorm for LayerNorm<T> {
     }
 }
 
-impl<T: ReqOps> RunRWKVLayer<T> for RWKVLayer<T> {
+impl<T: ReqOps, WT: ParDot<Output = Array1<T>>> RunRWKVLayer<T> for RWKVLayer<T, WT> {
     type XTy = Array1<T>;
     type Out = Array1<T>;
 
@@ -121,7 +142,7 @@ impl<T: ReqOps> RunRWKVLayer<T> for RWKVLayer<T> {
     }
 }
 
-impl<T: ReqOps> RunRWKV<T> for RWKV<T> {
+impl<T: ReqOps, WT: ParDot<Output = Array1<T>>> RunRWKV<T> for RWKV<T, WT> {
     type Out = Array1<T>;
     type Token = usize;
 
@@ -140,10 +161,6 @@ impl<T: ReqOps> RunRWKV<T> for RWKV<T> {
                 layer.evaluate(x, &mut state[lnum])
             });
 
-        let x = pardot(&self.head, &self.ln_out.norm(&x));
-        let x_max = x.fold(T::min_value(), |acc, el| acc.max(*el));
-        let e_x = (x - x_max).mapv(|el| el.exp());
-
-        &e_x / e_x.sum()
+        self.head_weight.pardot(&self.ln_out.norm(&x))
     }
 }

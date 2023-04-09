@@ -43,11 +43,11 @@ pub struct FFNTime<T> {
 /// 1. blocks.N.att.[key,value,output,receptance].weight
 /// 3. Keys described in AttTime.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Attention<T> {
-    pub key_weight: Array2<T>,
-    pub value_weight: Array2<T>,
-    pub output_weight: Array2<T>,
-    pub receptance_weight: Array2<T>,
+pub struct Attention<T, WT> {
+    pub key_weight: WT,
+    pub value_weight: WT,
+    pub output_weight: WT,
+    pub receptance_weight: WT,
     pub time: AttTime<T>,
 }
 
@@ -55,33 +55,33 @@ pub struct Attention<T> {
 /// 1. blocks.N.ffn.[key,value,receptance].weight
 /// 3. Keys described in FFNTime.
 #[derive(Debug, Clone, PartialEq)]
-pub struct FeedForwardNetwork<T> {
-    pub key_weight: Array2<T>,
-    pub value_weight: Array2<T>,
-    pub receptance_weight: Array2<T>,
+pub struct FeedForwardNetwork<T, WT> {
+    pub key_weight: WT,
+    pub value_weight: WT,
+    pub receptance_weight: WT,
     pub time: FFNTime<T>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 /// See the comments for Attention, FeedForwardNetwork and LayerNorm.
-pub struct RWKVLayer<T> {
+pub struct RWKVLayer<T, WT> {
     /// Layer normalization used for time mixing (ln1).
     pub ln_tm: LayerNorm<T>,
     /// Layer normalization used for channel mixing (ln2).
     pub ln_cm: LayerNorm<T>,
-    pub att: Attention<T>,
-    pub ffn: FeedForwardNetwork<T>,
+    pub att: Attention<T, WT>,
+    pub ffn: FeedForwardNetwork<T, WT>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct RWKV<T> {
+pub struct RWKV<T, WT> {
     /// emb.weight
     pub emb: Array2<T>,
     /// head.weight
-    pub head: Array2<T>,
+    pub head_weight: WT,
     /// ln_out.[weight,bias]
     pub ln_out: LayerNorm<T>,
-    pub layers: Vec<RWKVLayer<T>>,
+    pub layers: Vec<RWKVLayer<T, WT>>,
 
     /// Number of vocabulary items.
     pub n_vocab: usize,
@@ -94,13 +94,10 @@ pub struct RWKV<T> {
 #[derive(Clone, PartialEq)]
 /// Each layer has its own independent state.
 pub struct RWKVLayerState<T> {
-    /// State from time mixing.
     pub tm_last_x: Array1<T>,
-    /// Time mixing numerator?
-    pub tm_num: Array1<T>,
-    /// Time mixing denominator?
-    pub tm_den: Array1<T>,
-    /// State from channel mixing.
+    pub tm_aa: Array1<T>,
+    pub tm_bb: Array1<T>,
+    pub tm_pp: Array1<T>,
     pub cm_last_x: Array1<T>,
 }
 
@@ -108,10 +105,11 @@ impl<T: ReqOps> RWKVLayerState<T> {
     pub fn new(n_embed: usize) -> Self {
         let zs = Array1::zeros(n_embed);
         Self {
+            cm_last_x: zs.clone(),
             tm_last_x: zs.clone(),
-            tm_num: zs.clone(),
-            tm_den: zs.clone(),
-            cm_last_x: zs,
+            tm_aa: zs.clone(),
+            tm_bb: zs,
+            tm_pp: Array1::from_elem(n_embed, T::neg_infinity()),
         }
     }
 }

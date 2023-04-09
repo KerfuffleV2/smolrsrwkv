@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Error, Ok, Result};
-use ndarray::Axis;
+use ndarray::{Array2, Axis};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 use crate::{
@@ -44,10 +44,13 @@ impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for AttTime<T> {
     type Error = Error;
 
     fn try_from(lm: &LM<'_>) -> Result<Self> {
+        let mut decay = gk(lm, "att.time_decay", T::tensor_to_array1)?;
+        // Time decay can be precomputed to simplify inference.
+        decay.mapv_inplace(|el| -el.exp());
+
         Ok(AttTime {
             first: gk(lm, "att.time_first", T::tensor_to_array1)?,
-            // Time decay can be precomputed to simplify inference.
-            decay: gk(lm, "att.time_decay", T::tensor_to_array1)?.mapv(|el| (-el.exp()).exp()),
+            decay,
             mix_k: Mix(gk(lm, "att.time_mix_k", T::tensor_to_array1)?),
             mix_v: Mix(gk(lm, "att.time_mix_v", T::tensor_to_array1)?),
             mix_r: Mix(gk(lm, "att.time_mix_r", T::tensor_to_array1)?),
@@ -55,7 +58,7 @@ impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for AttTime<T> {
     }
 }
 
-impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for Attention<T> {
+impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for Attention<T, Array2<T>> {
     type Error = Error;
 
     fn try_from(lm: &LM<'_>) -> Result<Self> {
@@ -80,7 +83,7 @@ impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for FFNTime<T> {
     }
 }
 
-impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for FeedForwardNetwork<T> {
+impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for FeedForwardNetwork<T, Array2<T>> {
     type Error = Error;
 
     fn try_from(lm: &LM<'_>) -> Result<Self> {
@@ -93,7 +96,7 @@ impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for FeedForwardNetwork<T> {
     }
 }
 
-impl<T: ConvertBF16Tensor> TryFrom<TensorDataMap<'_>> for RWKV<T> {
+impl<T: ConvertBF16Tensor> TryFrom<TensorDataMap<'_>> for RWKV<T, Array2<T>> {
     type Error = Error;
 
     fn try_from(tensors: TensorDataMap<'_>) -> Result<Self> {
@@ -133,10 +136,10 @@ impl<T: ConvertBF16Tensor> TryFrom<TensorDataMap<'_>> for RWKV<T> {
             .ok_or_else(|| anyhow!("Missing non-layer tensors!"))?;
         let l0m = tm.get(&Some(0)).expect("Missing first layer!");
         // It's possible to just precompute the embeddings in advance.
-        let ln0 = LayerNorm::try_from((0, l0m))?;
         let mut emb = gk(nlm, "emb.weight", T::tensor_to_array2)??;
         let n_embed = emb.shape()[1];
         let n_vocab = emb.shape()[0];
+        let ln0 = LayerNorm::try_from((0, l0m))?;
         (0..n_vocab).for_each(|idx| {
             let idxemb = emb
                 .index_axis_mut(Axis(0), idx)
@@ -164,13 +167,13 @@ impl<T: ConvertBF16Tensor> TryFrom<TensorDataMap<'_>> for RWKV<T> {
                     ffn: FeedForwardNetwork::try_from(lm)?,
                 })
             })
-            .collect::<Result<Vec<RWKVLayer<T>>, _>>()?;
+            .collect::<Result<Vec<RWKVLayer<T, Array2<T>>>, _>>()?;
 
         println!("\n* Loading non-layer tensors.");
 
         Ok(RWKV {
             emb,
-            head: gk(nlm, "head.weight", T::tensor_to_array2)??,
+            head_weight: gk(nlm, "head.weight", T::tensor_to_array2)??,
             ln_out: LayerNorm {
                 bias: gk(nlm, "ln_out.bias", T::tensor_to_array1)?,
                 weight: gk(nlm, "ln_out.weight", T::tensor_to_array1)?,

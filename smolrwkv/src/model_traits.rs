@@ -2,8 +2,14 @@
 
 pub trait HasRWKVLayerState<T> {
     type State;
-    fn get_tm_state(&self) -> (&Self::State, &Self::State, &Self::State);
-    fn set_tm_state(&mut self, tm_last_x: Self::State, tm_num: Self::State, tm_den: Self::State);
+    fn get_tm_state(&self) -> (&Self::State, &Self::State, &Self::State, &Self::State);
+    fn set_tm_state(
+        &mut self,
+        tm_last_x: Self::State,
+        aa: Self::State,
+        bb: Self::State,
+        pp: Self::State,
+    );
     fn get_cm_state(&self) -> &Self::State;
     fn set_cm_state(&mut self, cm_last_x: Self::State);
 }

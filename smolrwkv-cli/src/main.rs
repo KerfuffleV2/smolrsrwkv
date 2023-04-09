@@ -1,12 +1,13 @@
 use anyhow::{anyhow, Ok, Result};
 use clap::Parser;
-use ndarray::ArrayView1;
+use ndarray::{Array2, ArrayView1};
 use rand::{rngs::StdRng, SeedableRng};
 use tokenizers::Tokenizer;
 
 use smolrwkv::{
     loader::TensorDataMap,
-    quantized as Q, simple as S,
+    quantized::model::TensorQ2,
+    simple as S,
     util::{mmap_file, run_threadlimited, sample_probs},
 };
 
@@ -36,12 +37,17 @@ fn main() -> Result<()> {
 
     let mut context = run_threadlimited(args.max_load_threads, move || {
         anyhow::Ok(if args.no_quantized {
-            Ctx::FloatCtx(S::context::RWKVContext::<FloatType>::new(
+            Ctx::FloatCtx(
+                S::context::RWKVContext::<FloatType, Array2<FloatType>>::new(
+                    tdm.try_into()?,
+                    tokenizer,
+                ),
+            )
+        } else {
+            Ctx::QuantCtx(S::context::RWKVContext::<FloatType, TensorQ2>::new(
                 tdm.try_into()?,
                 tokenizer,
             ))
-        } else {
-            Ctx::QuantCtx(Q::context::RWKVContext::new(tdm.try_into()?, tokenizer))
         })
     })?;
 
