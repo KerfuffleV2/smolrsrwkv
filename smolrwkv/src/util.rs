@@ -1,7 +1,7 @@
 #![allow(clippy::deprecated_semver)]
 use std::ops::{Add, Sub};
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, ensure, Result};
 use mmap_rs::{MmapFlags, MmapOptions};
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2, NdFloat, ScalarOperand, Zip};
 use num_traits::FromPrimitive;
@@ -23,20 +23,25 @@ where
 impl ReqOps for f32 {}
 impl ReqOps for f64 {}
 
-/// Converting bfloat16 format tensors to 1D or 2D arrays of float (only implemented for f32).
-/// You could implement it for f64, but there's no practical reason to do so. Unfortunately,
-/// you can't easily implement it for smaller types (16bit, 8bit, etc).
-pub trait ConvertBF16Tensor: ReqOps {
-    fn tensor_to_array1(tensor: &TensorData<'_>) -> Array1<Self>;
-    fn tensor_to_array2(tensor: &TensorData<'_>) -> Result<Array2<Self>>;
+/// Converting bfloat16 format tensors. The exact type is pretty flexible.
+/// For non-quantized models, it'll just be converting to an array. However
+/// for quantized models the trait can be used to convert to a structure.
+/// In the case of 8bit quantized models, this would be TensorQ2 for 2D
+/// tensors.
+pub trait ConvertBF16Tensor<T>: Sized {
+    fn convert_tensor(tensor: &TensorData<'_>) -> Result<T>;
 }
 
-impl ConvertBF16Tensor for f32 {
-    fn tensor_to_array1(tensor: &TensorData<'_>) -> Array1<Self> {
-        Array1::from(bf16_tensor_to_f32(tensor))
+impl ConvertBF16Tensor<Array1<Self>> for f32 {
+    fn convert_tensor(tensor: &TensorData<'_>) -> Result<Array1<Self>> {
+        ensure!(tensor.dtype == TensorType::BFloat16, "Bad tensor type");
+        Ok(Array1::from(bf16_tensor_to_f32(tensor)))
     }
+}
 
-    fn tensor_to_array2(tensor: &TensorData<'_>) -> Result<Array2<Self>> {
+impl ConvertBF16Tensor<Array2<Self>> for f32 {
+    fn convert_tensor(tensor: &TensorData<'_>) -> Result<Array2<Self>> {
+        ensure!(tensor.dtype == TensorType::BFloat16, "Bad tensor type");
         // Squeeze all the things.
         let shp = tensor
             .shape
@@ -47,6 +52,16 @@ impl ConvertBF16Tensor for f32 {
         anyhow::ensure!(shp.len() == 2, "Bad shape");
         Array2::from_shape_vec((shp[0], shp[1]), bf16_tensor_to_f32(tensor))
             .map_err(|e| anyhow!("Failed to build tensor in tensor_to_array2: {e}"))
+    }
+}
+
+impl ConvertBF16Tensor<TensorQ2> for f32 {
+    fn convert_tensor(tensor: &TensorData<'_>) -> Result<TensorQ2> {
+        Ok(
+            <Self as ConvertBF16Tensor<Array2<Self>>>::convert_tensor(tensor)
+                .map_err(|e| anyhow!("Failed to build tensor in tensor_to_array2: {e}"))?
+                .into(),
+        )
     }
 }
 
@@ -254,5 +269,4 @@ mod dumdot {
         pardotv_chunked(&lhs.view(), &rhs.view())
     }
 }
-pub use dumdot::pardot;
-pub use dumdot::pardot8;
+pub use dumdot::{pardot, pardot8};
