@@ -55,7 +55,7 @@ impl<T: ReqOps> RunMix for Mix<T> {
     }
 }
 
-impl<T: ReqOps> RunAttention<T> for Attention<T> {
+impl<T: ReqOps, WT: ParDot<Output = Array1<T>>> RunAttention<T> for Attention<T, WT> {
     type State = Array1<T>;
     fn time_mixing<S: HasRWKVLayerState<T, State = Self::State>>(
         &self,
@@ -93,7 +93,7 @@ impl<T: ReqOps> RunAttention<T> for Attention<T> {
     }
 }
 
-impl<T: ReqOps> RunFFN<T> for FeedForwardNetwork<T> {
+impl<T: ReqOps, WT: ParDot<Output = Array1<T>>> RunFFN<T> for FeedForwardNetwork<T, WT> {
     type State = Array1<T>;
     fn channel_mixing<S: HasRWKVLayerState<T, State = Self::State>>(
         &self,
@@ -128,7 +128,7 @@ impl<T: ReqOps> RunLayerNorm for LayerNorm<T> {
     }
 }
 
-impl<T: ReqOps> RunRWKVLayer<T> for RWKVLayer<T> {
+impl<T: ReqOps, WT: ParDot<Output = Array1<T>>> RunRWKVLayer<T> for RWKVLayer<T, WT> {
     type XTy = Array1<T>;
     type Out = Array1<T>;
 
@@ -142,7 +142,7 @@ impl<T: ReqOps> RunRWKVLayer<T> for RWKVLayer<T> {
     }
 }
 
-impl<T: ReqOps> RunRWKV<T> for RWKV<T> {
+impl<T: ReqOps, WT: ParDot<Output = Array1<T>>> RunRWKV<T> for RWKV<T, WT> {
     type Out = Array1<T>;
     type Token = usize;
 

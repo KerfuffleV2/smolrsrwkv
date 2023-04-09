@@ -152,18 +152,21 @@ pub fn softmax<T: ReqOps>(x: &ArrayView1<T>) -> Array1<T> {
     &x_exp / x_exp.sum()
 }
 
-pub trait ParDot<T: ReqOps> {
-    fn pardot(&self, rhs: &Array1<T>) -> Array1<T>;
+pub trait ParDot {
+    type Output;
+    fn pardot(&self, rhs: &Self::Output) -> Self::Output;
 }
 
-impl<T: ReqOps> ParDot<T> for Array2<T> {
-    fn pardot(&self, rhs: &Array1<T>) -> Array1<T> {
+impl<T: ReqOps> ParDot for Array2<T> {
+    type Output = Array1<T>;
+    fn pardot(&self, rhs: &Self::Output) -> Self::Output {
         dumdot::pardotv_chunked(&self.view(), &rhs.view())
     }
 }
 
-impl ParDot<ATy> for TensorQ2 {
-    fn pardot(&self, rhs: &Array1<ATy>) -> Array1<ATy> {
+impl ParDot for TensorQ2 {
+    type Output = Array1<ATy>;
+    fn pardot(&self, rhs: &Self::Output) -> Self::Output {
         dumdot::pardot8(self, rhs)
     }
 }

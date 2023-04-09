@@ -1,18 +1,16 @@
 use std::io::Write;
 
 use anyhow::Result;
-use ndarray::ArrayView1;
+use ndarray::{Array2, ArrayView1};
 
-use smolrwkv::{
-    quantized::context::RWKVContext as QRWKVContext, simple::context::RWKVContext as SRWKVContext,
-};
+use smolrwkv::{quantized::model::TensorQ2, simple::context::RWKVContext};
 
 /// Used for non-quantized tensors and values.
 pub type FloatType = f32;
 
 pub enum Ctx {
-    FloatCtx(SRWKVContext<FloatType>),
-    QuantCtx(QRWKVContext),
+    FloatCtx(RWKVContext<FloatType, Array2<FloatType>>),
+    QuantCtx(RWKVContext<FloatType, TensorQ2>),
 }
 
 impl Ctx {

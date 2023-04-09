@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Error, Ok, Result};
-use ndarray::Axis;
+use ndarray::{Array2, Axis};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 use crate::{
@@ -58,7 +58,7 @@ impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for AttTime<T> {
     }
 }
 
-impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for Attention<T> {
+impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for Attention<T, Array2<T>> {
     type Error = Error;
 
     fn try_from(lm: &LM<'_>) -> Result<Self> {
@@ -83,7 +83,7 @@ impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for FFNTime<T> {
     }
 }
 
-impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for FeedForwardNetwork<T> {
+impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for FeedForwardNetwork<T, Array2<T>> {
     type Error = Error;
 
     fn try_from(lm: &LM<'_>) -> Result<Self> {
@@ -96,7 +96,7 @@ impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for FeedForwardNetwork<T> {
     }
 }
 
-impl<T: ConvertBF16Tensor> TryFrom<TensorDataMap<'_>> for RWKV<T> {
+impl<T: ConvertBF16Tensor> TryFrom<TensorDataMap<'_>> for RWKV<T, Array2<T>> {
     type Error = Error;
 
     fn try_from(tensors: TensorDataMap<'_>) -> Result<Self> {
@@ -167,7 +167,7 @@ impl<T: ConvertBF16Tensor> TryFrom<TensorDataMap<'_>> for RWKV<T> {
                     ffn: FeedForwardNetwork::try_from(lm)?,
                 })
             })
-            .collect::<Result<Vec<RWKVLayer<T>>, _>>()?;
+            .collect::<Result<Vec<RWKVLayer<T, Array2<T>>>, _>>()?;
 
         println!("\n* Loading non-layer tensors.");
 

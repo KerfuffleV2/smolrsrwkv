@@ -7,13 +7,13 @@ use tokenizers::Tokenizer;
 use crate::{
     model_traits::RunRWKV,
     simple::model::{RWKVLayerState, RWKV},
-    util::ReqOps,
+    util::{ParDot, ReqOps},
 };
 
 /// Context that holds the state of the RWKV model.
-pub struct RWKVContext<T> {
+pub struct RWKVContext<T, WT> {
     /// The RWKV model data — immutable.
-    pub rwkv: RWKV<T>,
+    pub rwkv: RWKV<T, WT>,
     /// Model state.
     pub state: Vec<RWKVLayerState<T>>,
     /// Probabilities from the last step (starts filled with zeros).
@@ -22,8 +22,8 @@ pub struct RWKVContext<T> {
     pub tokenizer: Tokenizer,
 }
 
-impl<T: ReqOps> RWKVContext<T> {
-    pub fn new(rwkv: RWKV<T>, tokenizer: Tokenizer) -> Self {
+impl<T: ReqOps, WT: ParDot<Output = Array1<T>>> RWKVContext<T, WT> {
+    pub fn new(rwkv: RWKV<T, WT>, tokenizer: Tokenizer) -> Self {
         let initial_state = std::iter::repeat(RWKVLayerState::new(rwkv.n_embed))
             .take(rwkv.n_layers)
             .collect::<Vec<_>>();

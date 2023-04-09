@@ -43,11 +43,11 @@ pub struct FFNTime<T> {
 /// 1. blocks.N.att.[key,value,output,receptance].weight
 /// 3. Keys described in AttTime.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Attention<T> {
-    pub key_weight: Array2<T>,
-    pub value_weight: Array2<T>,
-    pub output_weight: Array2<T>,
-    pub receptance_weight: Array2<T>,
+pub struct Attention<T, WT> {
+    pub key_weight: WT,
+    pub value_weight: WT,
+    pub output_weight: WT,
+    pub receptance_weight: WT,
     pub time: AttTime<T>,
 }
 
@@ -55,33 +55,33 @@ pub struct Attention<T> {
 /// 1. blocks.N.ffn.[key,value,receptance].weight
 /// 3. Keys described in FFNTime.
 #[derive(Debug, Clone, PartialEq)]
-pub struct FeedForwardNetwork<T> {
-    pub key_weight: Array2<T>,
-    pub value_weight: Array2<T>,
-    pub receptance_weight: Array2<T>,
+pub struct FeedForwardNetwork<T, WT> {
+    pub key_weight: WT,
+    pub value_weight: WT,
+    pub receptance_weight: WT,
     pub time: FFNTime<T>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 /// See the comments for Attention, FeedForwardNetwork and LayerNorm.
-pub struct RWKVLayer<T> {
+pub struct RWKVLayer<T, WT> {
     /// Layer normalization used for time mixing (ln1).
     pub ln_tm: LayerNorm<T>,
     /// Layer normalization used for channel mixing (ln2).
     pub ln_cm: LayerNorm<T>,
-    pub att: Attention<T>,
-    pub ffn: FeedForwardNetwork<T>,
+    pub att: Attention<T, WT>,
+    pub ffn: FeedForwardNetwork<T, WT>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct RWKV<T> {
+pub struct RWKV<T, WT> {
     /// emb.weight
     pub emb: Array2<T>,
     /// head.weight
-    pub head_weight: Array2<T>,
+    pub head_weight: WT,
     /// ln_out.[weight,bias]
     pub ln_out: LayerNorm<T>,
-    pub layers: Vec<RWKVLayer<T>>,
+    pub layers: Vec<RWKVLayer<T, WT>>,
 
     /// Number of vocabulary items.
     pub n_vocab: usize,

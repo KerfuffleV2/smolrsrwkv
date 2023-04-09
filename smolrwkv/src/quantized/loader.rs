@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Error, Ok, Result};
 use rayon::{iter::ParallelIterator, prelude::IntoParallelIterator};
 
-use ndarray::Axis;
+use ndarray::{Array1, Array2, AsArray, Axis, Ix2, IxDyn};
 use std::{
     collections::HashMap,
     io::{stdout, Write},
@@ -10,10 +10,68 @@ use std::{
 use crate::{
     loader::{TensorData, TensorDataMap},
     model_traits::RunLayerNorm,
-    quantized::model::*,
-    simple::model as S,
+    quantized::model::{ATy, TensorQ2},
+    simple::model::*,
     util::ConvertBF16Tensor,
 };
+
+fn amin<'a, A: AsArray<'a, ATy, Ix2>>(arr: A, axis: Axis) -> Array1<ATy> {
+    arr.into()
+        .axis_iter(axis)
+        .map(|a| a.iter().copied().fold(ATy::INFINITY, |a, b| a.min(b)))
+        .collect::<Array1<ATy>>()
+}
+
+fn amax<'a, A: AsArray<'a, ATy, Ix2>>(arr: A, axis: Axis) -> Array1<ATy> {
+    arr.into()
+        .axis_iter(axis)
+        .map(|a| a.iter().copied().fold(ATy::NEG_INFINITY, |a, b| a.max(b)))
+        .collect::<Array1<ATy>>()
+}
+
+impl From<Array2<ATy>> for TensorQ2 {
+    fn from(mut value: Array2<ATy>) -> Self {
+        let shape = value.shape();
+        let (mx, my) = if shape[0] > shape[1] {
+            let miny = amin(&value, Axis(0)).insert_axis(Axis(1));
+            value -= &miny;
+            let miny = miny
+                .into_dimensionality::<IxDyn>()
+                .expect("miny failed dimensionality conversion!");
+            let minx = amin(&value, Axis(1));
+            value -= &minx;
+            let minx = minx
+                .into_dimensionality::<IxDyn>()
+                .expect("minx failed dimensionality conversion!");
+            (minx, miny)
+        } else {
+            let miny = amin(&value, Axis(1));
+            value -= &miny;
+            let miny = miny
+                .into_dimensionality::<IxDyn>()
+                .expect("miny failed dimensionality conversion!");
+            let minx = amin(&value, Axis(0)).insert_axis(Axis(1));
+            value -= &minx;
+            let minx = minx
+                .into_dimensionality::<IxDyn>()
+                .expect("minx failed dimensionality conversion!");
+
+            (minx, miny)
+        };
+        let rx = amax(&value, Axis(1));
+        value /= &rx;
+        let ry = amax(&value, Axis(0)).insert_axis(Axis(1));
+        value /= &ry;
+        let weight = value.mapv(|el| (el * 256.0).floor().clamp(0.0, 255.0) as u8);
+        Self {
+            weight,
+            mx,
+            my,
+            rx: rx / 16.0,
+            ry: ry / 16.0,
+        }
+    }
+}
 
 /// LayerMap helper type to avoid repetition.
 type LM<'a> = HashMap<String, TensorData<'a>>;
@@ -24,7 +82,7 @@ fn gk<O>(m: &LM, k: &str, f: impl Fn(&TensorData<'_>) -> O) -> Result<O> {
     m.get(k).map(f).ok_or_else(|| anyhow!("Bad format"))
 }
 
-impl TryFrom<&LM<'_>> for Attention {
+impl TryFrom<&LM<'_>> for Attention<ATy, TensorQ2> {
     type Error = Error;
 
     fn try_from(lm: &LM<'_>) -> Result<Self> {
@@ -32,8 +90,8 @@ impl TryFrom<&LM<'_>> for Attention {
         let value_weight = gk(lm, "att.value.weight", ATy::tensor_to_array2)??.into();
         let output_weight = gk(lm, "att.output.weight", ATy::tensor_to_array2)??.into();
         let receptance_weight = gk(lm, "att.receptance.weight", ATy::tensor_to_array2)??.into();
-        Ok(Attention {
-            time: S::AttTime::try_from(lm)?,
+        Ok(Self {
+            time: AttTime::try_from(lm)?,
             key_weight,
             value_weight,
             output_weight,
@@ -42,15 +100,15 @@ impl TryFrom<&LM<'_>> for Attention {
     }
 }
 
-impl TryFrom<&LM<'_>> for FeedForwardNetwork {
+impl TryFrom<&LM<'_>> for FeedForwardNetwork<ATy, TensorQ2> {
     type Error = Error;
 
     fn try_from(lm: &LM<'_>) -> Result<Self> {
         let key_weight = gk(lm, "ffn.key.weight", ATy::tensor_to_array2)??.into();
         let value_weight = gk(lm, "ffn.value.weight", ATy::tensor_to_array2)??.into();
         let receptance_weight = gk(lm, "ffn.receptance.weight", ATy::tensor_to_array2)??.into();
-        Ok(FeedForwardNetwork {
-            time: S::FFNTime::try_from(lm)?,
+        Ok(Self {
+            time: FFNTime::try_from(lm)?,
             key_weight,
             value_weight,
             receptance_weight,
@@ -58,7 +116,7 @@ impl TryFrom<&LM<'_>> for FeedForwardNetwork {
     }
 }
 
-impl TryFrom<TensorDataMap<'_>> for RWKV {
+impl TryFrom<TensorDataMap<'_>> for RWKV<ATy, TensorQ2> {
     type Error = Error;
 
     fn try_from(tensors: TensorDataMap<'_>) -> Result<Self> {
@@ -101,7 +159,7 @@ impl TryFrom<TensorDataMap<'_>> for RWKV {
         let mut emb = gk(nlm, "emb.weight", ATy::tensor_to_array2)??;
         let n_embed = emb.shape()[1];
         let n_vocab = emb.shape()[0];
-        let ln0 = S::LayerNorm::try_from((0, l0m))?;
+        let ln0 = LayerNorm::try_from((0, l0m))?;
         (0..n_vocab).for_each(|idx| {
             let idxemb = emb
                 .index_axis_mut(Axis(0), idx)
@@ -123,20 +181,20 @@ impl TryFrom<TensorDataMap<'_>> for RWKV {
                     .get(&Some(lnum as u32))
                     .expect("Impossible layer missing");
                 Ok(RWKVLayer {
-                    ln_tm: S::LayerNorm::try_from((1, lm))?,
-                    ln_cm: S::LayerNorm::try_from((2, lm))?,
+                    ln_tm: LayerNorm::try_from((1, lm))?,
+                    ln_cm: LayerNorm::try_from((2, lm))?,
                     att: Attention::try_from(lm)?,
                     ffn: FeedForwardNetwork::try_from(lm)?,
                 })
             })
-            .collect::<Result<Vec<RWKVLayer>, _>>()?;
+            .collect::<Result<Vec<RWKVLayer<ATy, TensorQ2>>, _>>()?;
 
         println!("\n* Loading non-layer tensors.");
 
         Ok(RWKV {
             emb,
             head_weight: gk(nlm, "head.weight", ATy::tensor_to_array2)??.into(),
-            ln_out: S::LayerNorm {
+            ln_out: LayerNorm {
                 bias: gk(nlm, "ln_out.bias", ATy::tensor_to_array1)?,
                 weight: gk(nlm, "ln_out.weight", ATy::tensor_to_array1)?,
             },
