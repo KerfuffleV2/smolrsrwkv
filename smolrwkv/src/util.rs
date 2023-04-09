@@ -6,6 +6,7 @@ use ndarray::{Array1, Array2, ArrayView1, ArrayView2, NdFloat, ScalarOperand, Zi
 use num_traits::FromPrimitive;
 
 use crate::loader::{TensorData, TensorType};
+use crate::quantized::model::{ATy, TensorQ2};
 
 /// Basically all the math stuff ndarray supports and we need for evaluating
 /// RWKV
@@ -99,8 +100,10 @@ pub fn sample_probs<T: ReqOps + num_traits::AsPrimitive<f32>>(
 ) -> usize {
     use rand::distributions::{Distribution, WeightedError, WeightedIndex};
 
+    let probs = softmax(probs);
     let mut sorted_probs = probs.as_slice().unwrap().to_vec();
 
+    // FIXME: Don't use unwrap here.
     sorted_probs.sort_by(|a, b| T::partial_cmp(a, b).unwrap().reverse());
     let mut cumulative_probs = Vec::with_capacity(sorted_probs.len());
     let _ = sorted_probs.iter().fold(T::zero(), |acc, i| {
@@ -142,6 +145,27 @@ pub fn sample_probs<T: ReqOps + num_traits::AsPrimitive<f32>>(
 pub fn sigmoid<T: ReqOps>(x: Array1<T>) -> Array1<T> {
     let o = T::one();
     x.map(|val| o / (o + (-(*val)).exp()))
+}
+
+pub fn softmax<T: ReqOps>(x: &ArrayView1<T>) -> Array1<T> {
+    let x_exp = x.mapv(T::exp);
+    &x_exp / x_exp.sum()
+}
+
+pub trait ParDot<T: ReqOps> {
+    fn pardot(&self, rhs: &Array1<T>) -> Array1<T>;
+}
+
+impl<T: ReqOps> ParDot<T> for Array2<T> {
+    fn pardot(&self, rhs: &Array1<T>) -> Array1<T> {
+        dumdot::pardotv_chunked(&self.view(), &rhs.view())
+    }
+}
+
+impl ParDot<ATy> for TensorQ2 {
+    fn pardot(&self, rhs: &Array1<ATy>) -> Array1<ATy> {
+        dumdot::pardot8(self, rhs)
+    }
 }
 
 #[allow(dead_code)]

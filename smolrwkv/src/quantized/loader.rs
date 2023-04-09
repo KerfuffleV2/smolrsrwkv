@@ -98,10 +98,10 @@ impl TryFrom<TensorDataMap<'_>> for RWKV {
             .ok_or_else(|| anyhow!("Missing non-layer tensors!"))?;
         let l0m = tm.get(&Some(0)).expect("Missing first layer!");
         // It's possible to just precompute the embeddings in advance.
-        let ln0 = S::LayerNorm::try_from((0, l0m))?;
         let mut emb = gk(nlm, "emb.weight", ATy::tensor_to_array2)??;
         let n_embed = emb.shape()[1];
         let n_vocab = emb.shape()[0];
+        let ln0 = S::LayerNorm::try_from((0, l0m))?;
         (0..n_vocab).for_each(|idx| {
             let idxemb = emb
                 .index_axis_mut(Axis(0), idx)
@@ -135,7 +135,7 @@ impl TryFrom<TensorDataMap<'_>> for RWKV {
 
         Ok(RWKV {
             emb,
-            head: gk(nlm, "head.weight", ATy::tensor_to_array2)??.into(),
+            head_weight: gk(nlm, "head.weight", ATy::tensor_to_array2)??.into(),
             ln_out: S::LayerNorm {
                 bias: gk(nlm, "ln_out.bias", ATy::tensor_to_array1)?,
                 weight: gk(nlm, "ln_out.weight", ATy::tensor_to_array1)?,

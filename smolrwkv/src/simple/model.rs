@@ -78,7 +78,7 @@ pub struct RWKV<T> {
     /// emb.weight
     pub emb: Array2<T>,
     /// head.weight
-    pub head: Array2<T>,
+    pub head_weight: Array2<T>,
     /// ln_out.[weight,bias]
     pub ln_out: LayerNorm<T>,
     pub layers: Vec<RWKVLayer<T>>,
@@ -94,13 +94,10 @@ pub struct RWKV<T> {
 #[derive(Clone, PartialEq)]
 /// Each layer has its own independent state.
 pub struct RWKVLayerState<T> {
-    /// State from time mixing.
     pub tm_last_x: Array1<T>,
-    /// Time mixing numerator?
-    pub tm_num: Array1<T>,
-    /// Time mixing denominator?
-    pub tm_den: Array1<T>,
-    /// State from channel mixing.
+    pub tm_aa: Array1<T>,
+    pub tm_bb: Array1<T>,
+    pub tm_pp: Array1<T>,
     pub cm_last_x: Array1<T>,
 }
 
@@ -108,10 +105,11 @@ impl<T: ReqOps> RWKVLayerState<T> {
     pub fn new(n_embed: usize) -> Self {
         let zs = Array1::zeros(n_embed);
         Self {
+            cm_last_x: zs.clone(),
             tm_last_x: zs.clone(),
-            tm_num: zs.clone(),
-            tm_den: zs.clone(),
-            cm_last_x: zs,
+            tm_aa: zs.clone(),
+            tm_bb: zs,
+            tm_pp: Array1::from_elem(n_embed, T::neg_infinity()),
         }
     }
 }

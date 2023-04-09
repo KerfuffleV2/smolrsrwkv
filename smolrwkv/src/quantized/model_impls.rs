@@ -1,11 +1,11 @@
 #![allow(clippy::upper_case_acronyms)]
-use ndarray::{Array1, Array2, AsArray, Axis, Ix2, IxDyn};
-use num_traits::{Bounded, Zero};
+use ndarray::{Array1, Array2, AsArray, Axis, Ix2, IxDyn, Zip};
+use num_traits::Zero;
 
 use crate::quantized::model::*;
 use crate::{
     model_traits::*,
-    util::{pardot8, sigmoid},
+    util::{sigmoid, ParDot},
 };
 
 fn amin<'a, A: AsArray<'a, ATy, Ix2>>(arr: A, axis: Axis) -> Array1<ATy> {
@@ -73,29 +73,34 @@ impl RunAttention<ATy> for Attention {
         x: Self::State,
         state: &mut S,
     ) -> Self::State {
-        let (last_x, last_num, last_den) = state.get_tm_state();
+        let (tm_last_x, aa, bb, pp) = state.get_tm_state();
 
-        let mix_k = &self.time.mix_k.mix(&x, last_x);
-        let mix_v = &self.time.mix_v.mix(&x, last_x);
-        let mix_r = &self.time.mix_r.mix(&x, last_x);
+        let xk = &self.time.mix_k.mix(&x, tm_last_x);
+        let xv = &self.time.mix_v.mix(&x, tm_last_x);
+        let xr = &self.time.mix_r.mix(&x, tm_last_x);
 
-        let k = pardot8(&self.key_weight, mix_k);
-        let v = pardot8(&self.value_weight, mix_v);
-        let r = pardot8(&self.receptance_weight, mix_r);
+        let r = sigmoid(self.receptance_weight.pardot(xr));
+        let k = self.key_weight.pardot(xk);
+        let v = self.value_weight.pardot(xv);
 
-        let exp_k = k.mapv(|el| el.exp());
-        let exp_decay = self.time.decay.view();
+        let ww = &self.time.first + &k;
+        let qq = Zip::from(&ww).and(pp).map_collect(|el1, el2| el1.max(*el2));
+        let e1 = (pp - &qq).mapv(ATy::exp);
+        let e2 = (ww - qq).mapv(ATy::exp);
+        let a = &e1 * aa + &e2 * &v;
+        let b = &e1 * bb + e2;
 
-        let wkv = {
-            let e = (&self.time.first + &k).mapv(|el| el.exp());
-            (last_num + (&e * &v)) / (last_den + e)
-        };
-        let rwkv = sigmoid(r) * wkv;
+        let wkv = a / b;
+        let ww = pp + &self.time.decay;
+        let qq = Zip::from(&ww).and(&k).map_collect(|el1, el2| el1.max(*el2));
+        let e1 = (ww - &qq).mapv(ATy::exp);
+        let e2 = (k - &qq).mapv(ATy::exp);
 
-        let num = (&exp_decay * last_num) + (&exp_k * &v);
-        let den = (&exp_decay * last_den) + &exp_k;
-        state.set_tm_state(x, num, den);
-        pardot8(&self.output_weight, &rwkv)
+        let new_aa = &e1 * aa + &e2 * v;
+        let new_bb = e1 * bb + e2;
+        let new_pp = qq;
+        state.set_tm_state(x, new_aa, new_bb, new_pp);
+        self.output_weight.pardot(&(r * wkv))
     }
 }
 
@@ -106,20 +111,19 @@ impl RunFFN<ATy> for FeedForwardNetwork {
         x: Self::State,
         state: &mut S,
     ) -> Self::State {
-        let last_x = state.get_cm_state();
+        let cm_last_x = state.get_cm_state();
+        let zero = ATy::zero();
 
-        let mix_k = &self.time.mix_k.mix(&x, last_x);
-        let mix_r = &self.time.mix_r.mix(&x, last_x);
+        let xk = &self.time.mix_k.mix(&x, cm_last_x);
+        let xr = &self.time.mix_r.mix(&x, cm_last_x);
+        let r = sigmoid(self.receptance_weight.pardot(xr));
 
-        let k = pardot8(&self.key_weight, mix_k);
-        let r = pardot8(&self.receptance_weight, mix_r);
-        let vk = pardot8(
-            &self.value_weight,
-            &k.mapv(|val| val.max(ATy::zero()).powi(2)),
-        );
+        let mut k = self.key_weight.pardot(xk);
+        // ReLU + square
+        k.mapv_inplace(|el| zero.max(el).powi(2));
 
         state.set_cm_state(x);
-        sigmoid(r) * &vk
+        r * self.value_weight.pardot(&k)
     }
 }
 
@@ -156,10 +160,6 @@ impl RunRWKV<ATy> for RWKV {
                 layer.evaluate(x, &mut state[lnum])
             });
 
-        let x = pardot8(&self.head, &self.ln_out.norm(&x));
-        let x_max = x.fold(ATy::min_value(), |acc, el| acc.max(*el));
-        let e_x = (x - x_max).mapv(|el| el.exp());
-
-        &e_x / e_x.sum()
+        self.head_weight.pardot(&self.ln_out.norm(&x))
     }
 }
