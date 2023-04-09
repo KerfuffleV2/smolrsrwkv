@@ -6,6 +6,7 @@ use std::{
 use anyhow::{anyhow, Error, Ok, Result};
 use ndarray::{Array2, Axis};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use tracing::{info, instrument};
 
 use crate::{
     loader::{TensorData, TensorDataMap},
@@ -61,6 +62,7 @@ impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for AttTime<T> {
 impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for Attention<T, Array2<T>> {
     type Error = Error;
 
+    #[instrument(skip_all, name = "load_attention", level = "DEBUG")]
     fn try_from(lm: &LM<'_>) -> Result<Self> {
         Ok(Attention {
             key_weight: gk(lm, "att.key.weight", T::tensor_to_array2)??,
@@ -86,6 +88,7 @@ impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for FFNTime<T> {
 impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for FeedForwardNetwork<T, Array2<T>> {
     type Error = Error;
 
+    #[instrument(skip_all, name = "load_ffn", level = "DEBUG")]
     fn try_from(lm: &LM<'_>) -> Result<Self> {
         Ok(FeedForwardNetwork {
             key_weight: gk(lm, "ffn.key.weight", T::tensor_to_array2)??,
@@ -99,6 +102,7 @@ impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for FeedForwardNetwork<T, Array2<T>>
 impl<T: ConvertBF16Tensor> TryFrom<TensorDataMap<'_>> for RWKV<T, Array2<T>> {
     type Error = Error;
 
+    #[instrument(skip_all, name = "load_model")]
     fn try_from(tensors: TensorDataMap<'_>) -> Result<Self> {
         let mut n_layers = 0usize;
         // This builds a HashMap of HashMaps.
@@ -109,7 +113,7 @@ impl<T: ConvertBF16Tensor> TryFrom<TensorDataMap<'_>> for RWKV<T, Array2<T>> {
         // could be in any order. This means if you're loading from a spinny disky it could require
         // seeking all around the file rather than just reading sequentially.
 
-        println!("* Discovering model structure for model type float32.");
+        info!("Discovering model structure for model type float32.");
         let tm = tensors.into_iter().try_fold(
             HashMap::<Option<u32>, HashMap<String, TensorData<'_>>>::new(),
             |mut tm, (mut name, tensor)| {
@@ -130,7 +134,7 @@ impl<T: ConvertBF16Tensor> TryFrom<TensorDataMap<'_>> for RWKV<T, Array2<T>> {
             },
         )?;
 
-        println!("* Precomputing embedding.");
+        info!("Precomputing embedding.");
         let nlm = tm
             .get(&None)
             .ok_or_else(|| anyhow!("Missing non-layer tensors!"))?;
@@ -150,8 +154,7 @@ impl<T: ConvertBF16Tensor> TryFrom<TensorDataMap<'_>> for RWKV<T, Array2<T>> {
 
         anyhow::ensure!(n_layers > 0, "Not even one measly layer?");
 
-        print!("* Loading {n_layers} layer(s): ");
-        stdout().flush().ok();
+        info!("Loading {n_layers} layer(s):");
         let layers = (0..n_layers)
             .into_par_iter()
             .map(|lnum| {
@@ -168,8 +171,8 @@ impl<T: ConvertBF16Tensor> TryFrom<TensorDataMap<'_>> for RWKV<T, Array2<T>> {
                 })
             })
             .collect::<Result<Vec<RWKVLayer<T, Array2<T>>>, _>>()?;
-
-        println!("\n* Loading non-layer tensors.");
+        println!();
+        info!("Loading non-layer tensors.");
 
         Ok(RWKV {
             emb,

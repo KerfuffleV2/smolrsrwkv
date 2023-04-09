@@ -1,5 +1,6 @@
 #![allow(clippy::upper_case_acronyms)]
 use ndarray::{Array1, ArrayView1, Axis, Zip};
+use tracing::{instrument, span, Level};
 
 use crate::simple::model::*;
 use crate::{
@@ -51,12 +52,15 @@ impl<T: ReqOps> RunMix for Mix<T> {
         last_x: LX,
     ) -> Self::Out {
         let (x, time_mix, last_x) = (&x.into(), &self.0, &last_x.into());
+        span!(Level::DEBUG, "mix", x = ?x.shape(), last_x = ?last_x.shape());
         x * time_mix + last_x * (T::one() - time_mix)
     }
 }
 
 impl<T: ReqOps, WT: ParDot<Output = Array1<T>>> RunAttention<T> for Attention<T, WT> {
     type State = Array1<T>;
+
+    #[instrument(skip_all, level = "DEBUG")]
     fn time_mixing<S: HasRWKVLayerState<T, State = Self::State>>(
         &self,
         x: Self::State,
@@ -64,14 +68,19 @@ impl<T: ReqOps, WT: ParDot<Output = Array1<T>>> RunAttention<T> for Attention<T,
     ) -> Self::State {
         let (tm_last_x, aa, bb, pp) = state.get_tm_state();
 
+        let mixing_span = span!(Level::DEBUG, "mixing").entered();
         let xk = &self.time.mix_k.mix(&x, tm_last_x);
         let xv = &self.time.mix_v.mix(&x, tm_last_x);
         let xr = &self.time.mix_r.mix(&x, tm_last_x);
+        drop(mixing_span);
 
+        let rkv_span = span!(Level::DEBUG, "rkv").entered();
         let r = sigmoid(self.receptance_weight.pardot(xr));
         let k = self.key_weight.pardot(xk);
         let v = self.value_weight.pardot(xv);
+        drop(rkv_span);
 
+        let remaining_span = span!(Level::DEBUG, "remaining-work");
         let ww = &self.time.first + &k;
         let qq = Zip::from(&ww).and(pp).map_collect(|el1, el2| el1.max(*el2));
         let e1 = (pp - &qq).mapv(T::exp);
@@ -88,13 +97,17 @@ impl<T: ReqOps, WT: ParDot<Output = Array1<T>>> RunAttention<T> for Attention<T,
         let new_aa = &e1 * aa + &e2 * v;
         let new_bb = e1 * bb + e2;
         let new_pp = qq;
+        drop(remaining_span);
         state.set_tm_state(x, new_aa, new_bb, new_pp);
+        span!(Level::DEBUG, "output");
         self.output_weight.pardot(&(r * wkv))
     }
 }
 
 impl<T: ReqOps, WT: ParDot<Output = Array1<T>>> RunFFN<T> for FeedForwardNetwork<T, WT> {
     type State = Array1<T>;
+
+    #[instrument(level = "DEBUG", skip_all)]
     fn channel_mixing<S: HasRWKVLayerState<T, State = Self::State>>(
         &self,
         x: Self::State,
@@ -103,15 +116,22 @@ impl<T: ReqOps, WT: ParDot<Output = Array1<T>>> RunFFN<T> for FeedForwardNetwork
         let cm_last_x = state.get_cm_state();
         let zero = T::zero();
 
-        let xk = &self.time.mix_k.mix(&x, cm_last_x);
-        let xr = &self.time.mix_r.mix(&x, cm_last_x);
-        let r = sigmoid(self.receptance_weight.pardot(xr));
+        let (ref xk, ref xr) = span!(Level::DEBUG, "mixing").in_scope(|| {
+            (
+                self.time.mix_k.mix(&x, cm_last_x),
+                self.time.mix_r.mix(&x, cm_last_x),
+            )
+        });
 
-        let mut k = self.key_weight.pardot(xk);
+        let r = span!(Level::DEBUG, "r").in_scope(|| sigmoid(self.receptance_weight.pardot(xr)));
+
+        let mut k = span!(Level::DEBUG, "k").in_scope(|| self.key_weight.pardot(xk));
         // ReLU + square
-        k.mapv_inplace(|el| zero.max(el).powi(2));
+        span!(Level::DEBUG, "k-relu-squared")
+            .in_scope(|| k.mapv_inplace(|el| zero.max(el).powi(2)));
 
         state.set_cm_state(x);
+        span!(Level::DEBUG, "output");
         r * self.value_weight.pardot(&k)
     }
 }
@@ -119,6 +139,8 @@ impl<T: ReqOps, WT: ParDot<Output = Array1<T>>> RunFFN<T> for FeedForwardNetwork
 impl<T: ReqOps> RunLayerNorm for LayerNorm<T> {
     type XTy<'a> = ArrayView1<'a, T>;
     type Out = Array1<T>;
+
+    #[instrument(skip_all, level = "DEBUG", name = "layer_norm")]
     fn norm<'a, X: Into<Self::XTy<'a>>>(&self, x: X) -> Self::Out {
         let origx = x.into();
         let x = &origx.view();
@@ -132,6 +154,7 @@ impl<T: ReqOps, WT: ParDot<Output = Array1<T>>> RunRWKVLayer<T> for RWKVLayer<T,
     type XTy = Array1<T>;
     type Out = Array1<T>;
 
+    #[instrument(skip_all, level = "DEBUG", name = "evaluate_layer")]
     fn evaluate<S: HasRWKVLayerState<T, State = Self::Out>>(
         &self,
         x: Self::XTy,
@@ -146,6 +169,7 @@ impl<T: ReqOps, WT: ParDot<Output = Array1<T>>> RunRWKV<T> for RWKV<T, WT> {
     type Out = Array1<T>;
     type Token = usize;
 
+    #[instrument(skip_all, level = "DEBUG", fields(token = token))]
     fn evaluate<S: HasRWKVLayerState<T, State = Self::Out>>(
         &self,
         token: Self::Token,
@@ -153,14 +177,16 @@ impl<T: ReqOps, WT: ParDot<Output = Array1<T>>> RunRWKV<T> for RWKV<T, WT> {
     ) -> Self::Out {
         let initial_x = self.emb.index_axis(Axis(0), token).to_owned();
 
-        let x = self
-            .layers
-            .iter()
-            .enumerate()
-            .fold(initial_x, |x, (lnum, layer)| {
-                layer.evaluate(x, &mut state[lnum])
-            });
+        let x = span!(Level::DEBUG, "layers").in_scope(|| {
+            self.layers
+                .iter()
+                .enumerate()
+                .fold(initial_x, |x, (lnum, layer)| {
+                    layer.evaluate(x, &mut state[lnum])
+                })
+        });
 
+        span!(Level::DEBUG, "output");
         self.head_weight.pardot(&self.ln_out.norm(&x))
     }
 }

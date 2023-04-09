@@ -1,9 +1,11 @@
+#![allow(clippy::deprecated_semver)]
 use std::ops::{Add, Sub};
 
 use anyhow::{anyhow, Result};
 use mmap_rs::{MmapFlags, MmapOptions};
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2, NdFloat, ScalarOperand, Zip};
 use num_traits::FromPrimitive;
+use tracing::instrument;
 
 use crate::loader::{TensorData, TensorType};
 use crate::quantized::model::{ATy, TensorQ2};
@@ -91,6 +93,7 @@ fn bf16_tensor_to_f32(tensor: &TensorData<'_>) -> Vec<f32> {
 
 /// Magical stuff I don't understand too well. It takes the list of probabilities
 /// and chooses a reasonable tokenid based on that.
+#[instrument(level = "DEBUG", skip(rng), ret, fields(probs = ?probs.shape()))]
 pub fn sample_probs<T: ReqOps + num_traits::AsPrimitive<f32>>(
     rng: &mut impl rand::Rng,
     probs: &ArrayView1<T>,
@@ -142,11 +145,13 @@ pub fn sample_probs<T: ReqOps + num_traits::AsPrimitive<f32>>(
     dist.sample(rng)
 }
 
+#[instrument(level = "DEBUG", fields(x = ?x.shape()))]
 pub fn sigmoid<T: ReqOps>(x: Array1<T>) -> Array1<T> {
     let o = T::one();
     x.map(|val| o / (o + (-(*val)).exp()))
 }
 
+#[instrument(level = "DEBUG", fields(x = ?x.shape()))]
 pub fn softmax<T: ReqOps>(x: &ArrayView1<T>) -> Array1<T> {
     let x_exp = x.mapv(T::exp);
     &x_exp / x_exp.sum()
@@ -159,6 +164,7 @@ pub trait ParDot {
 
 impl<T: ReqOps> ParDot for Array2<T> {
     type Output = Array1<T>;
+    #[instrument(level = "DEBUG",skip(self), fields(lhs = ?self.shape(), rhs = ?rhs.shape()))]
     fn pardot(&self, rhs: &Self::Output) -> Self::Output {
         dumdot::pardotv_simple(&self.view(), &rhs.view())
     }
@@ -166,6 +172,7 @@ impl<T: ReqOps> ParDot for Array2<T> {
 
 impl ParDot for TensorQ2 {
     type Output = Array1<ATy>;
+    #[instrument(level = "DEBUG", skip(self), fields(lhs = ?self.weight.shape(), rhs = ?rhs.shape()))]
     fn pardot(&self, rhs: &Self::Output) -> Self::Output {
         dumdot::pardot8(self, rhs)
     }

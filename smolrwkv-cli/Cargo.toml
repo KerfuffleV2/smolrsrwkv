@@ -12,5 +12,8 @@ rayon = "1.7"
 tokenizers = { version = "0.13", default-features = false, features = ["onig"] }
 rand = "0.8"
 clap = { version = "4.2", features=["derive", "cargo"]}
+tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
+tracing = "0.1"
+# tracing-flame = "0.2"
 
 smolrwkv = { path = "../smolrwkv" }

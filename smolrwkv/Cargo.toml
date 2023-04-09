@@ -19,6 +19,7 @@ rayon = "1.7"
 half = "2.2"
 rand = "0.8"
 num-traits = "0.2"
+tracing = "0.1"
 
 [dependencies.repugnant-pickle]
 git = "https://github.com/kerfufflev2/repugnant-pickle"

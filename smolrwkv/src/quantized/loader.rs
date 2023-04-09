@@ -1,11 +1,12 @@
-use anyhow::{anyhow, Error, Ok, Result};
-use rayon::{iter::ParallelIterator, prelude::IntoParallelIterator};
-
-use ndarray::{Array1, Array2, AsArray, Axis, Ix2, IxDyn};
 use std::{
     collections::HashMap,
     io::{stdout, Write},
 };
+
+use anyhow::{anyhow, Error, Ok, Result};
+use ndarray::{Array1, Array2, AsArray, Axis, Ix2, IxDyn};
+use rayon::{iter::ParallelIterator, prelude::IntoParallelIterator};
+use tracing::{info, instrument};
 
 use crate::{
     loader::{TensorData, TensorDataMap},
@@ -85,6 +86,7 @@ fn gk<O>(m: &LM, k: &str, f: impl Fn(&TensorData<'_>) -> O) -> Result<O> {
 impl TryFrom<&LM<'_>> for Attention<ATy, TensorQ2> {
     type Error = Error;
 
+    #[instrument(skip_all, name = "load_attention", level = "DEBUG")]
     fn try_from(lm: &LM<'_>) -> Result<Self> {
         let key_weight = gk(lm, "att.key.weight", ATy::tensor_to_array2)??.into();
         let value_weight = gk(lm, "att.value.weight", ATy::tensor_to_array2)??.into();
@@ -103,6 +105,7 @@ impl TryFrom<&LM<'_>> for Attention<ATy, TensorQ2> {
 impl TryFrom<&LM<'_>> for FeedForwardNetwork<ATy, TensorQ2> {
     type Error = Error;
 
+    #[instrument(skip_all, name = "load_ffn", level = "DEBUG")]
     fn try_from(lm: &LM<'_>) -> Result<Self> {
         let key_weight = gk(lm, "ffn.key.weight", ATy::tensor_to_array2)??.into();
         let value_weight = gk(lm, "ffn.value.weight", ATy::tensor_to_array2)??.into();
@@ -119,6 +122,7 @@ impl TryFrom<&LM<'_>> for FeedForwardNetwork<ATy, TensorQ2> {
 impl TryFrom<TensorDataMap<'_>> for RWKV<ATy, TensorQ2> {
     type Error = Error;
 
+    #[instrument(skip_all, name = "load_model")]
     fn try_from(tensors: TensorDataMap<'_>) -> Result<Self> {
         let mut n_layers = 0usize;
         // This builds a HashMap of HashMaps.
@@ -129,7 +133,7 @@ impl TryFrom<TensorDataMap<'_>> for RWKV<ATy, TensorQ2> {
         // could be in any order. This means if you're loading from a spinny disky it could require
         // seeking all around the file rather than just reading sequentially.
 
-        println!("* Discovering model structure for model type Q8.");
+        info!("Discovering model structure for model type Q8.");
         let tm = tensors.into_iter().try_fold(
             HashMap::<Option<u32>, HashMap<String, TensorData<'_>>>::new(),
             |mut tm, (mut name, tensor)| {
@@ -150,7 +154,7 @@ impl TryFrom<TensorDataMap<'_>> for RWKV<ATy, TensorQ2> {
             },
         )?;
 
-        println!("* Precomputing embedding.");
+        info!("Precomputing embedding.");
         let nlm = tm
             .get(&None)
             .ok_or_else(|| anyhow!("Missing non-layer tensors!"))?;
@@ -170,8 +174,7 @@ impl TryFrom<TensorDataMap<'_>> for RWKV<ATy, TensorQ2> {
 
         anyhow::ensure!(n_layers > 0, "Not even one measly layer?");
 
-        print!("* Loading {n_layers} layer(s): ");
-        stdout().flush().ok();
+        info!("Loading {n_layers} layer(s):");
         let layers = (0..n_layers)
             .into_par_iter()
             .map(|lnum| {
@@ -189,7 +192,8 @@ impl TryFrom<TensorDataMap<'_>> for RWKV<ATy, TensorQ2> {
             })
             .collect::<Result<Vec<RWKVLayer<ATy, TensorQ2>>, _>>()?;
 
-        println!("\n* Loading non-layer tensors.");
+        println!();
+        info!("Loading non-layer tensors.");
 
         Ok(RWKV {
             emb,

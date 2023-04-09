@@ -3,6 +3,7 @@ use clap::Parser;
 use ndarray::{Array2, ArrayView1};
 use rand::{rngs::StdRng, SeedableRng};
 use tokenizers::Tokenizer;
+use tracing::info;
 
 use smolrwkv::{
     loader::TensorDataMap,
@@ -17,11 +18,36 @@ mod util;
 use args::Args;
 use util::{show_token, Ctx, FloatType};
 
-fn main() -> Result<()> {
+// pub fn setup_logging() -> impl Drop {
+pub fn setup_logging() {
+    use tracing::metadata::LevelFilter;
+    // use tracing_flame::FlameLayer;
+    use tracing_subscriber::{fmt, layer::SubscriberExt, Layer};
+
+    let fmt_layer = fmt::layer()
+        .compact()
+        .with_timer(tracing_subscriber::fmt::time::uptime())
+        .with_filter(
+            tracing_subscriber::EnvFilter::builder()
+                .with_default_directive(LevelFilter::INFO.into())
+                .from_env_lossy(),
+        );
+
+    // let (flame_layer, _guard) = FlameLayer::with_file("./tracing.folded").unwrap();
+
+    let sub = tracing_subscriber::registry()
+        // .with(flame_layer)
+        .with(fmt_layer);
+
+    tracing::subscriber::set_global_default(sub).expect("Could tracing subscriber");
+    // _guard
+}
+
+fn go() -> Result<()> {
     let args = Args::parse();
     let tokenizerfn = &args.tokenizer;
     let modelfn = &args.model;
-    println!("> Using configuration: {args:?}\n");
+    info!("Using configuration: {args:?}\n");
 
     let mut rng: rand::rngs::StdRng = if let Some(seed) = &args.seed {
         StdRng::seed_from_u64(*seed)
@@ -29,9 +55,9 @@ fn main() -> Result<()> {
         StdRng::from_entropy()
     };
 
-    println!("* Loading tokenizer from: {tokenizerfn}");
+    info!("Loading tokenizer from: {tokenizerfn}");
     let tokenizer = Tokenizer::from_file(tokenizerfn).map_err(|e| anyhow!(e))?;
-    println!("* Loading model from: {modelfn}");
+    info!("Loading model from: {modelfn}");
     let mm = mmap_file(modelfn)?;
     let tdm: TensorDataMap<'_> = (modelfn.clone(), mm.as_slice()).try_into()?;
 
@@ -62,7 +88,7 @@ fn main() -> Result<()> {
     };
 
     let (n_layers, n_embed, n_vocab) = context.params();
-    println!("* Loaded: layers={n_layers}, embed={n_embed}, vocab={n_vocab}",);
+    info!("Loaded: layers={n_layers}, embed={n_embed}, vocab={n_vocab}",);
 
     let max_tokens = args.max_tokens.unwrap_or(usize::MAX);
     let (tcount, elapsed) = run_threadlimited(args.max_eval_threads, || {
@@ -83,11 +109,17 @@ fn main() -> Result<()> {
         Ok((tcount, etime - stime))
     })?;
 
-    println!(" [end of text]");
+    println!(" [end of text]\n");
     let tps = tcount as f64 / (elapsed.as_millis() as f64 / 1000.0);
-    println!(
-        "\n* Completion. Token(s) generated: {tcount}, elapsed time: {:?}, TPS: {tps}",
+    info!(
+        "Completion. Token(s) generated: {tcount}, elapsed time: {:?}, TPS: {tps}",
         elapsed
     );
     Ok(())
+}
+
+pub fn main() -> Result<()> {
+    setup_logging();
+    // let _guard = setup_logging();
+    go()
 }
