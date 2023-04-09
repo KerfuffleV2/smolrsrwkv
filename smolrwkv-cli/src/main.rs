@@ -18,10 +18,8 @@ mod util;
 use args::Args;
 use util::{show_token, Ctx, FloatType};
 
-// pub fn setup_logging() -> impl Drop {
 pub fn setup_logging() {
     use tracing::metadata::LevelFilter;
-    // use tracing_flame::FlameLayer;
     use tracing_subscriber::{fmt, layer::SubscriberExt, Layer};
 
     let fmt_layer = fmt::layer()
@@ -33,14 +31,9 @@ pub fn setup_logging() {
                 .from_env_lossy(),
         );
 
-    // let (flame_layer, _guard) = FlameLayer::with_file("./tracing.folded").unwrap();
-
-    let sub = tracing_subscriber::registry()
-        // .with(flame_layer)
-        .with(fmt_layer);
+    let sub = tracing_subscriber::registry().with(fmt_layer);
 
     tracing::subscriber::set_global_default(sub).expect("Could tracing subscriber");
-    // _guard
 }
 
 fn go() -> Result<()> {
@@ -63,6 +56,7 @@ fn go() -> Result<()> {
 
     let mut context = run_threadlimited(args.max_load_threads, move || {
         anyhow::Ok(if args.no_quantized {
+            info!("Model type: non-quantized (full 32bit).");
             Ctx::FloatCtx(
                 S::context::RWKVContext::<FloatType, Array2<FloatType>>::new(
                     tdm.try_into()?,
@@ -70,6 +64,7 @@ fn go() -> Result<()> {
                 ),
             )
         } else {
+            info!("Model type: 8 bit-quantized weights.");
             Ctx::QuantCtx(S::context::RWKVContext::<FloatType, TensorQ2>::new(
                 tdm.try_into()?,
                 tokenizer,
@@ -120,6 +115,5 @@ fn go() -> Result<()> {
 
 pub fn main() -> Result<()> {
     setup_logging();
-    // let _guard = setup_logging();
     go()
 }
