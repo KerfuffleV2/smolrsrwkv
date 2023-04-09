@@ -27,6 +27,7 @@ fn gk<O>(m: &LM, k: &str, f: impl Fn(&TensorData<'_>) -> O) -> Result<O> {
 impl<T: ConvertBF16Tensor> TryFrom<(usize, &LM<'_>)> for LayerNorm<T> {
     type Error = Error;
 
+    #[instrument(skip_all, name = "convert_layer_norm", level = "DEBUG")]
     fn try_from((idx, lm): (usize, &HashMap<String, TensorData<'_>>)) -> Result<Self> {
         Ok(Self {
             bias: T::tensor_to_array1(
@@ -44,6 +45,7 @@ impl<T: ConvertBF16Tensor> TryFrom<(usize, &LM<'_>)> for LayerNorm<T> {
 impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for AttTime<T> {
     type Error = Error;
 
+    #[instrument(skip_all, name = "convert_attn_time_mix", level = "DEBUG")]
     fn try_from(lm: &LM<'_>) -> Result<Self> {
         let mut decay = gk(lm, "att.time_decay", T::tensor_to_array1)?;
         // Time decay can be precomputed to simplify inference.
@@ -62,7 +64,7 @@ impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for AttTime<T> {
 impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for Attention<T, Array2<T>> {
     type Error = Error;
 
-    #[instrument(skip_all, name = "load_attention", level = "DEBUG")]
+    #[instrument(skip_all, name = "convert_attention", level = "DEBUG")]
     fn try_from(lm: &LM<'_>) -> Result<Self> {
         Ok(Attention {
             key_weight: gk(lm, "att.key.weight", T::tensor_to_array2)??,
@@ -77,6 +79,7 @@ impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for Attention<T, Array2<T>> {
 impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for FFNTime<T> {
     type Error = Error;
 
+    #[instrument(skip_all, name = "convert_ffn_time_mix", level = "DEBUG")]
     fn try_from(lm: &LM<'_>) -> Result<Self> {
         Ok(FFNTime {
             mix_k: Mix(gk(lm, "ffn.time_mix_k", T::tensor_to_array1)?),
@@ -88,7 +91,7 @@ impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for FFNTime<T> {
 impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for FeedForwardNetwork<T, Array2<T>> {
     type Error = Error;
 
-    #[instrument(skip_all, name = "load_ffn", level = "DEBUG")]
+    #[instrument(skip_all, name = "convert_ffn", level = "DEBUG")]
     fn try_from(lm: &LM<'_>) -> Result<Self> {
         Ok(FeedForwardNetwork {
             key_weight: gk(lm, "ffn.key.weight", T::tensor_to_array2)??,
@@ -99,12 +102,25 @@ impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for FeedForwardNetwork<T, Array2<T>>
     }
 }
 
+impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for RWKVLayer<T, Array2<T>> {
+    type Error = Error;
+
+    #[instrument(skip_all, name = "convert_layer", level = "DEBUG")]
+    fn try_from(lm: &LM<'_>) -> Result<Self> {
+        Ok(Self {
+            ln_tm: LayerNorm::try_from((1, lm))?,
+            ln_cm: LayerNorm::try_from((2, lm))?,
+            att: Attention::try_from(lm)?,
+            ffn: FeedForwardNetwork::try_from(lm)?,
+        })
+    }
+}
+
 impl<T: ConvertBF16Tensor> TryFrom<TensorDataMap<'_>> for RWKV<T, Array2<T>> {
     type Error = Error;
 
     #[instrument(skip_all, name = "load_model")]
     fn try_from(tensors: TensorDataMap<'_>) -> Result<Self> {
-        let mut n_layers = 0usize;
         // This builds a HashMap of HashMaps.
         // The top level is None for non-layer tensors like "emb.weight" and
         // Some(layer_index) for each layer. The second level is just String key to TensorData.
@@ -113,37 +129,54 @@ impl<T: ConvertBF16Tensor> TryFrom<TensorDataMap<'_>> for RWKV<T, Array2<T>> {
         // could be in any order. This means if you're loading from a spinny disky it could require
         // seeking all around the file rather than just reading sequentially.
 
-        info!("Discovering model structure for model type float32.");
-        let tm = tensors.into_iter().try_fold(
-            HashMap::<Option<u32>, HashMap<String, TensorData<'_>>>::new(),
-            |mut tm, (mut name, tensor)| {
-                let (layer_num, ktv) = if let Some(rest) = name.strip_prefix("blocks.") {
-                    let result = rest.split_once('.').ok_or_else(|| anyhow!("Bad format"))?;
-                    let lnum: usize = result.0.parse()?;
-                    n_layers = n_layers.max(lnum + 1);
-                    name = result.1.to_string();
-                    (Some(lnum as u32), tensor)
-                } else {
-                    (None, tensor)
-                };
+        info!("Discovering model structure for model type Q8.");
+        let mut layers = Vec::with_capacity(32);
+        let mut nlm = HashMap::default();
+        tensors.into_iter().try_for_each(|(mut name, tensor)| {
+            if let Some(rest) = name.strip_prefix("blocks.") {
+                let result = rest.split_once('.').ok_or_else(|| anyhow!("Bad format"))?;
+                let lnum: usize = result.0.parse()?;
+                if lnum >= layers.len() {
+                    layers.resize_with(lnum + 1, HashMap::default);
+                }
 
-                tm.entry(layer_num)
-                    .or_insert_with(Default::default)
-                    .insert(name, ktv);
-                Ok(tm)
-            },
-        )?;
+                name = result.1.to_string();
+                layers[lnum].insert(name, tensor);
+                Ok(())
+            } else {
+                nlm.insert(name, tensor);
+                Ok(())
+            }
+        })?;
 
+        anyhow::ensure!(!layers.is_empty(), "Not even one measly layer?");
+        anyhow::ensure!(
+            layers.iter().all(|lm| !lm.is_empty()),
+            "Unexpected empty layers!"
+        );
+        anyhow::ensure!(!nlm.is_empty(), "Missing non-layer tensors!");
+        let n_layers = layers.len();
+
+        let ln0 = { LayerNorm::try_from((0, &layers[0]))? };
+
+        info!("Loading {n_layers} layer(s):");
+        let layers = layers
+            .into_par_iter()
+            .map(|lm| {
+                print!(".");
+                stdout().flush().ok();
+                RWKVLayer::try_from(&lm)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        println!();
         info!("Precomputing embedding.");
-        let nlm = tm
-            .get(&None)
-            .ok_or_else(|| anyhow!("Missing non-layer tensors!"))?;
-        let l0m = tm.get(&Some(0)).expect("Missing first layer!");
+
         // It's possible to just precompute the embeddings in advance.
-        let mut emb = gk(nlm, "emb.weight", T::tensor_to_array2)??;
+        let mut emb = gk(&nlm, "emb.weight", T::tensor_to_array2)??;
         let n_embed = emb.shape()[1];
         let n_vocab = emb.shape()[0];
-        let ln0 = LayerNorm::try_from((0, l0m))?;
+
         (0..n_vocab).for_each(|idx| {
             let idxemb = emb
                 .index_axis_mut(Axis(0), idx)
@@ -151,35 +184,16 @@ impl<T: ConvertBF16Tensor> TryFrom<TensorDataMap<'_>> for RWKV<T, Array2<T>> {
                 .expect("Impossible: into_slice_memory_order failed!");
             idxemb.copy_from_slice(&ln0.norm(&idxemb).into_raw_vec());
         });
+        drop(ln0);
 
-        anyhow::ensure!(n_layers > 0, "Not even one measly layer?");
-
-        info!("Loading {n_layers} layer(s):");
-        let layers = (0..n_layers)
-            .into_par_iter()
-            .map(|lnum| {
-                print!(".");
-                stdout().flush().ok();
-                let lm = tm
-                    .get(&Some(lnum as u32))
-                    .expect("Impossible layer missing");
-                Ok(RWKVLayer {
-                    ln_tm: LayerNorm::try_from((1, lm))?,
-                    ln_cm: LayerNorm::try_from((2, lm))?,
-                    att: Attention::try_from(lm)?,
-                    ffn: FeedForwardNetwork::try_from(lm)?,
-                })
-            })
-            .collect::<Result<Vec<RWKVLayer<T, Array2<T>>>, _>>()?;
-        println!();
         info!("Loading non-layer tensors.");
 
         Ok(RWKV {
             emb,
-            head_weight: gk(nlm, "head.weight", T::tensor_to_array2)??,
+            head_weight: gk(&nlm, "head.weight", T::tensor_to_array2)??,
             ln_out: LayerNorm {
-                bias: gk(nlm, "ln_out.bias", T::tensor_to_array1)?,
-                weight: gk(nlm, "ln_out.weight", T::tensor_to_array1)?,
+                bias: gk(&nlm, "ln_out.bias", T::tensor_to_array1)?,
+                weight: gk(&nlm, "ln_out.weight", T::tensor_to_array1)?,
             },
             layers,
             n_layers,
