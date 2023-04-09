@@ -68,36 +68,43 @@ impl<T: ReqOps, WT: ParDot<Output = Array1<T>>> RunAttention<T> for Attention<T,
     ) -> Self::State {
         let (tm_last_x, aa, bb, pp) = state.get_tm_state();
 
-        let mixing_span = span!(Level::DEBUG, "mixing").entered();
-        let xk = &self.time.mix_k.mix(&x, tm_last_x);
-        let xv = &self.time.mix_v.mix(&x, tm_last_x);
-        let xr = &self.time.mix_r.mix(&x, tm_last_x);
-        drop(mixing_span);
+        let (ref xk, ref xv, ref xr) = span!(Level::DEBUG, "mixing").in_scope(|| {
+            let xk = self.time.mix_k.mix(&x, tm_last_x);
+            let xv = self.time.mix_v.mix(&x, tm_last_x);
+            let xr = self.time.mix_r.mix(&x, tm_last_x);
+            (xk, xv, xr)
+        });
 
-        let rkv_span = span!(Level::DEBUG, "rkv").entered();
-        let r = sigmoid(self.receptance_weight.pardot(xr));
-        let k = self.key_weight.pardot(xk);
-        let v = self.value_weight.pardot(xv);
-        drop(rkv_span);
+        let (r, k, v) = span!(Level::DEBUG, "rkv").in_scope(|| {
+            let r = sigmoid(self.receptance_weight.pardot(xr));
+            let k = self.key_weight.pardot(xk);
+            let v = self.value_weight.pardot(xv);
+            (r, k, v)
+        });
 
-        let remaining_span = span!(Level::DEBUG, "remaining-work");
-        let ww = &self.time.first + &k;
-        let qq = Zip::from(&ww).and(pp).map_collect(|el1, el2| el1.max(*el2));
-        let e1 = (pp - &qq).mapv(T::exp);
-        let e2 = (ww - qq).mapv(T::exp);
-        let a = &e1 * aa + &e2 * &v;
-        let b = &e1 * bb + e2;
+        let (a, b) = span!(Level::DEBUG, "remaining-phase1").in_scope(|| {
+            let ww = &self.time.first + &k;
+            let qq = Zip::from(&ww).and(pp).map_collect(|el1, el2| el1.max(*el2));
+            let e1 = (pp - &qq).mapv(T::exp);
+            let e2 = (ww - qq).mapv(T::exp);
+            let a = &e1 * aa + &e2 * &v;
+            let b = &e1 * bb + e2;
+            (a, b)
+        });
 
-        let wkv = a / b;
-        let ww = pp + &self.time.decay;
-        let qq = Zip::from(&ww).and(&k).map_collect(|el1, el2| el1.max(*el2));
-        let e1 = (ww - &qq).mapv(T::exp);
-        let e2 = (k - &qq).mapv(T::exp);
+        let (wkv, new_aa, new_bb, new_pp) =
+            span!(Level::DEBUG, "remaining-phase2").in_scope(|| {
+                let ww = pp + &self.time.decay;
+                let qq = Zip::from(&ww).and(&k).map_collect(|el1, el2| el1.max(*el2));
+                let e1 = (ww - &qq).mapv(T::exp);
+                let e2 = (k - &qq).mapv(T::exp);
 
-        let new_aa = &e1 * aa + &e2 * v;
-        let new_bb = e1 * bb + e2;
-        let new_pp = qq;
-        drop(remaining_span);
+                let new_aa = &e1 * aa + &e2 * v;
+                let new_bb = e1 * bb + e2;
+                let new_pp = qq;
+
+                (a / b, new_aa, new_bb, new_pp)
+            });
         state.set_tm_state(x, new_aa, new_bb, new_pp);
         span!(Level::DEBUG, "output");
         self.output_weight.pardot(&(r * wkv))
