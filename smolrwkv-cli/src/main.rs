@@ -16,6 +16,7 @@ mod args;
 mod util;
 
 use args::Args;
+use tracing_subscriber::fmt::format::FmtSpan;
 use util::{show_token, Ctx, FloatType};
 
 pub fn setup_logging() {
@@ -24,6 +25,7 @@ pub fn setup_logging() {
 
     let fmt_layer = fmt::layer()
         .compact()
+        // .with_span_events(FmtSpan::FULL)
         .with_timer(tracing_subscriber::fmt::time::uptime())
         .with_filter(
             tracing_subscriber::EnvFilter::builder()
@@ -53,6 +55,14 @@ fn go() -> Result<()> {
     info!("Loading model from: {modelfn}");
     let mm = mmap_file(modelfn)?;
     let tdm: TensorDataMap<'_> = (modelfn.clone(), mm.as_slice()).try_into()?;
+
+    {
+        use smolrwkv::ggml::{context::*, loader::*, model::*};
+
+        let rwkv: RWKV = tdm.try_into()?;
+        let rwkvctx = RWKVContext::new(rwkv, tokenizer);
+        panic!("Farewell, cruel word!");
+    }
 
     let mut context = run_threadlimited(args.max_load_threads, move || {
         anyhow::Ok(if args.no_quantized {

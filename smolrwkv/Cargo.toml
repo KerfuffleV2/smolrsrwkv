@@ -26,3 +26,6 @@ git = "https://github.com/kerfufflev2/repugnant-pickle"
 tag = "v0.0.1"
 features = ["torch"]
 optional = true
+
+[dependencies.ggml]
+path = "../../llama-rs/ggml"
