@@ -55,7 +55,7 @@ fn go() -> Result<()> {
     let mm = mmap_file(modelfn)?;
     let tdm: TensorDataMap<'_> = (modelfn.clone(), mm.as_slice()).try_into()?;
 
-    let mut context = match &args.eval_mode {
+    let context = match &args.eval_mode {
         args::EvalType::NDf32 => {
             Ctx::NdFloat32(run_threadlimited(args.max_load_threads, move || {
                 anyhow::Ok({
@@ -104,8 +104,8 @@ fn go() -> Result<()> {
     // FIXME: Duplicated code.
     // The solution isn't as simple as it may appear because the GGML types aren't Sync
     // which means thread limiting requires special handling.
-    let (tcount, elapsed) = match &mut context {
-        Ctx::NdFloat32(context) => run_threadlimited(args.max_eval_threads, || {
+    let (tcount, elapsed) = match context {
+        Ctx::NdFloat32(mut context) => run_threadlimited(args.max_eval_threads, || {
             use std::time::Instant;
 
             context.feed_prompt(args.prompt, Some(show_token))?;
@@ -122,7 +122,7 @@ fn go() -> Result<()> {
             let etime = Instant::now();
             Ok((tcount, etime - stime))
         }),
-        Ctx::NdQuant8(context) => run_threadlimited(args.max_eval_threads, || {
+        Ctx::NdQuant8(mut context) => run_threadlimited(args.max_eval_threads, || {
             use std::time::Instant;
 
             context.feed_prompt(args.prompt, Some(show_token))?;
@@ -139,7 +139,7 @@ fn go() -> Result<()> {
             let etime = Instant::now();
             Ok((tcount, etime - stime))
         }),
-        Ctx::GgmlFloat32(_) => {
+        Ctx::GgmlFloat32(mut context) => {
             use std::time::Instant;
 
             context.feed_prompt(args.prompt, Some(show_token))?;
@@ -154,6 +154,12 @@ fn go() -> Result<()> {
                 }
             }
             let etime = Instant::now();
+            let used_mem = context.rwkv.ctx.used_mem();
+            println!();
+            info!(
+                "GGML memory used: {used_mem} ({}GiB)",
+                (used_mem as f64) / (1024.0f64 * 1024.0 * 1024.0)
+            );
             Ok((tcount, etime - stime))
         }
     }?;

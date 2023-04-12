@@ -197,7 +197,7 @@ impl TryFrom<TensorDataMap<'_>> for RWKV {
         anyhow::ensure!(!nlm.is_empty(), "Missing non-layer tensors!");
 
         // FIXME; Real stuff here.
-        let ctx_size = 13 * 1024 * 1024 * 1024;
+        let ctx_size = 12 * 1024 * 1024 * 1024;
 
         let ctx = ggml::Context::init(ctx_size);
         let ln0 = crate::simple::model::LayerNorm::<f32>::try_from((0, &layers[0]))?;
