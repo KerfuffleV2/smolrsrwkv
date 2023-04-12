@@ -30,12 +30,8 @@ impl From<Tensor> for Tents {
     }
 }
 
-/// Helper function for extracting a tensor from the HashMap by string key.
+/// Helper function for extracting a 1d tensor from the HashMap by string key.
 /// Takes a closure to convert from the TensorData struct to a usable format.
-fn gk<O>((_, m): &BuildCtx, k: &str, f: impl Fn(&TensorData<'_>) -> O) -> Result<O> {
-    m.get(k).map(f).ok_or_else(|| anyhow!("Bad format"))
-}
-
 fn gk1(ctx: &Context, lm: &HashMap<String, TensorData<'_>>, key: &str) -> Result<Tensor> {
     let Tents(t) = (
         ctx,
@@ -47,6 +43,8 @@ fn gk1(ctx: &Context, lm: &HashMap<String, TensorData<'_>>, key: &str) -> Result
     Ok(t)
 }
 
+/// Helper function for extracting a 2d tensor from the HashMap by string key.
+/// Takes a closure to convert from the TensorData struct to a usable format.
 fn gk2(ctx: &Context, lm: &HashMap<String, TensorData<'_>>, key: &str) -> Result<Tensor> {
     let Tents(t) = (
         ctx,
@@ -93,7 +91,7 @@ impl TryFrom<BuildCtx<'_, '_>> for AttTime {
     type Error = Error;
 
     #[instrument(skip_all, err, name = "convert_attn_time_mix", level = "DEBUG")]
-    fn try_from(bctx @ (ctx, lm): BuildCtx<'_, '_>) -> Result<Self> {
+    fn try_from((ctx, lm): BuildCtx<'_, '_>) -> Result<Self> {
         let mut decay = <Ty as ConvertBF16Tensor<Array1<Ty>>>::convert_tensor(
             lm.get("att.time_decay")
                 .ok_or_else(|| anyhow!("Bad format"))?,
@@ -129,7 +127,7 @@ impl TryFrom<BuildCtx<'_, '_>> for FFNTime {
     type Error = Error;
 
     #[instrument(skip_all, name = "convert_ffn_time_mix", level = "DEBUG")]
-    fn try_from(bctx @ (ctx, lm): BuildCtx<'_, '_>) -> Result<Self> {
+    fn try_from((ctx, lm): BuildCtx<'_, '_>) -> Result<Self> {
         Ok(Self {
             mix_k: Mix(gk1(ctx, lm, "ffn.time_mix_k")?),
             mix_r: Mix(gk1(ctx, lm, "ffn.time_mix_r")?),
@@ -199,11 +197,9 @@ impl TryFrom<TensorDataMap<'_>> for RWKV {
         anyhow::ensure!(!nlm.is_empty(), "Missing non-layer tensors!");
 
         // FIXME; Real stuff here.
-        let ctx_size = 10 * 1024 * 1024 * 1024;
+        let ctx_size = 13 * 1024 * 1024 * 1024;
 
         let ctx = ggml::Context::init(ctx_size);
-
-        // let ln0 = LayerNorm::try_from((0, (&ctx, &layers[0])))?;
         let ln0 = crate::simple::model::LayerNorm::<f32>::try_from((0, &layers[0]))?;
 
         info!("Loading {n_layers} layer(s):");
@@ -217,35 +213,28 @@ impl TryFrom<TensorDataMap<'_>> for RWKV {
             .collect::<Result<Vec<_>, _>>()?;
 
         println!();
-        info!("Precomputing embedding... psyche!");
+        info!("Precomputing embedding...");
 
         // It's possible to just precompute the embeddings in advance.
-        let mut emba = <Ty as ConvertBF16Tensor<Array2<Ty>>>::convert_tensor(
-            nlm.get("emb.weight").ok_or_else(|| anyhow!("Bad format"))?,
-        )?;
-        let n_vocab = emba.shape()[0];
-        let n_embed = emba.shape()[1];
+        let (emb, n_embed, n_vocab) = {
+            let mut emba = <Ty as ConvertBF16Tensor<Array2<Ty>>>::convert_tensor(
+                nlm.get("emb.weight").ok_or_else(|| anyhow!("Bad format"))?,
+            )?;
+            let embashp = emba.shape();
+            let (n_vocab, n_embed) = (embashp[0], embashp[1]);
 
-        (0..n_vocab).for_each(|idx| {
-            use crate::model_traits::RunLayerNorm;
-            let idxemb = emba
-                .index_axis_mut(ndarray::Axis(0), idx)
-                .into_slice_memory_order()
-                .expect("Impossible: into_slice_memory_order failed!");
-            idxemb.copy_from_slice(&ln0.norm(&idxemb).into_raw_vec());
-        });
-        drop(ln0);
-        let Tents(emb) = (&ctx, emba).into();
-
-        // let emb = gk2(&ctx, &nlm, "emb.weight")?;
-        let embne = emb.get_ne();
-
-        // let n_vocab = embne[1] as usize;
-        // let n_embed = embne[0] as usize;
-        info!(
-            "Loaded? ({embne:?}) embed={n_embed} -- vocab={n_vocab}, -- {:?}",
-            emb.get_nb()
-        );
+            (0..n_vocab).for_each(|idx| {
+                use crate::model_traits::RunLayerNorm;
+                let idxemb = emba
+                    .index_axis_mut(ndarray::Axis(0), idx)
+                    .into_slice_memory_order()
+                    .expect("Impossible: into_slice_memory_order failed!");
+                idxemb.copy_from_slice(&ln0.norm(&idxemb).into_raw_vec());
+            });
+            drop(ln0);
+            let Tents(emb) = (&ctx, emba).into();
+            (emb, n_embed, n_vocab)
+        };
 
         info!("Loading non-layer tensors.");
 

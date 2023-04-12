@@ -14,15 +14,33 @@ pub struct RWKVContext {
     pub state: Vec<RWKVLayerState>,
     /// Probabilities from the last step (starts filled with zeros).
     pub last_probs: Array1<f32>,
+    /// It's a 1d tensor with length 1 that contains the token ID.
     pub token_tensor: Tensor,
+    /// This is the base of the graph and also where the probs appear.
     pub result_tensor: Tensor,
+    /// The GGML computation graph.
     pub ggml_graph: ComputationGraph,
     /// The tokenizer.
     pub tokenizer: Tokenizer,
 }
 
+// fn dump_tensor(lbl: &str, t: &Tensor) {
+//     let mut merp = vec![0f32; 10];
+//     unsafe {
+//         let td = std::slice::from_raw_parts(t.data() as *const f32, t.nelements());
+//         merp[0..5].copy_from_slice(&td[0..5]);
+//         merp[5..10].copy_from_slice(&td[td.len() - 5..td.len()]);
+//     }
+//     println!(
+//         "{lbl}: {:?}, type: {:?} | {:?}",
+//         t.get_ne(),
+//         t.get_type(),
+//         merp
+//     );
+// }
+
 impl RWKVContext {
-    pub fn new(rwkv: RWKV, tokenizer: Tokenizer) -> Self {
+    pub fn new(rwkv: RWKV, tokenizer: Tokenizer, eval_threads: usize) -> Self {
         let ctx = &rwkv.ctx;
 
         let token_tensor = ctx.new_tensor_1d(GT::I32, 1);
@@ -33,8 +51,15 @@ impl RWKVContext {
         let initial_probs = Array1::zeros(rwkv.n_vocab);
         let rwkv_ops_graph = rwkv.evaluate_ops(ctx, &mut initial_state, token_tensor.share());
 
-        let mut ggml_graph = ComputationGraph::new(4);
+        let mut ggml_graph = ComputationGraph::new(eval_threads);
         ggml_graph.build_forward_expand(&rwkv_ops_graph);
+        initial_state.iter().for_each(|s| {
+            ggml_graph.build_forward_expand(&s.tm_last_x);
+            ggml_graph.build_forward_expand(&s.cm_last_x);
+            ggml_graph.build_forward_expand(&s.tm_aa);
+            ggml_graph.build_forward_expand(&s.tm_bb);
+            ggml_graph.build_forward_expand(&s.tm_pp);
+        });
 
         Self {
             rwkv,
@@ -58,13 +83,10 @@ impl RWKVContext {
             .encode(s.as_ref(), false)
             .map_err(|e| anyhow!(e))?;
 
-        println!(" <<{:?}>> ", self.last_probs[0]);
         for tid in toks.get_ids().iter() {
             let tid = *tid as i32;
             self.token_tensor.set_i32_1d(0, tid);
             ctx.graph_compute(&mut self.ggml_graph);
-
-            // print!(" <<{tid}:{:?}>> ", self.last_probs[0]);
             if let Some(f) = &f {
                 self.tokenizer
                     .decode(vec![tid as u32], false)
@@ -80,7 +102,6 @@ impl RWKVContext {
             (self.result_tensor.data() as *const f32)
                 .copy_to_nonoverlapping(self.last_probs.as_mut_ptr(), self.last_probs.len());
         }
-        // self.ggml_graph.dump_graph();
         Ok(())
     }
 
@@ -113,7 +134,6 @@ impl RWKVContext {
             (self.result_tensor.data() as *const f32)
                 .copy_to_nonoverlapping(self.last_probs.as_mut_ptr(), self.last_probs.len());
         }
-        // print!(" <<{tid}:{:?}>> ", self.last_probs[0]);
         Ok(Some(output))
     }
 }
