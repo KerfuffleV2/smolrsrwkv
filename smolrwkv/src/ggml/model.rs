@@ -68,6 +68,7 @@ pub struct RWKV {
     pub emb: Tensor,
     pub head_weight: Tensor,
     pub ln_out: LayerNorm,
+    // pub ln0: LayerNorm,
     pub layers: Vec<RWKVLayer>,
 
     /// Number of vocabulary items.

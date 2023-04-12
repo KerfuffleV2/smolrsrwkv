@@ -1,11 +1,9 @@
-#![allow(unused_imports, unused_variables, dead_code)]
 use std::{
     collections::HashMap,
     io::{stdout, Write},
-    ops::Deref,
 };
 
-use anyhow::{anyhow, bail, ensure, Error, Ok as AOk, Result};
+use anyhow::{anyhow, Error, Ok as AOk, Result};
 use ndarray::{Array1, Array2};
 use tracing::{info, instrument};
 
@@ -13,7 +11,7 @@ use ggml::{Context, Tensor};
 
 use super::model::*;
 use crate::{
-    loader::{TensorData, TensorDataMap, TensorType},
+    loader::{TensorData, TensorDataMap},
     util::ConvertBF16Tensor,
 };
 
@@ -72,7 +70,8 @@ impl From<(&Context, Array1<Ty>)> for Tents {
 impl From<(&Context, Array2<Ty>)> for Tents {
     fn from((ctx, arr): (&Context, Array2<Ty>)) -> Self {
         let shp = arr.shape();
-        let t = ctx.new_tensor_2d(GT32, shp[0], shp[1]);
+        // NOTE: The order for shapes is reversed in GGML.
+        let t = ctx.new_tensor_2d(GT32, shp[1], shp[0]);
         unsafe { (t.data() as *mut f32).copy_from_nonoverlapping(arr.as_ptr(), arr.len()) }
         Self(t)
     }
@@ -84,8 +83,8 @@ impl TryFrom<(usize, BuildCtx<'_, '_>)> for LayerNorm {
     #[instrument(skip_all, name = "convert_layer_norm", level = "DEBUG")]
     fn try_from((idx, (ctx, lm)): (usize, BuildCtx<'_, '_>)) -> Result<Self> {
         Ok(Self {
-            bias: gk1(ctx, lm, &format!("ln{idx}.weight"))?,
-            weight: gk1(ctx, lm, &format!("ln{idx}.bias"))?,
+            weight: gk1(ctx, lm, &format!("ln{idx}.weight"))?,
+            bias: gk1(ctx, lm, &format!("ln{idx}.bias"))?,
         })
     }
 }
@@ -95,14 +94,12 @@ impl TryFrom<BuildCtx<'_, '_>> for AttTime {
 
     #[instrument(skip_all, err, name = "convert_attn_time_mix", level = "DEBUG")]
     fn try_from(bctx @ (ctx, lm): BuildCtx<'_, '_>) -> Result<Self> {
-        let Tents(decay) = (
-            ctx,
-            <Ty as ConvertBF16Tensor<Array1<Ty>>>::convert_tensor(
-                lm.get("att.time_decay")
-                    .ok_or_else(|| anyhow!("Bad format"))?,
-            )?,
-        )
-            .into();
+        let mut decay = <Ty as ConvertBF16Tensor<Array1<Ty>>>::convert_tensor(
+            lm.get("att.time_decay")
+                .ok_or_else(|| anyhow!("Bad format"))?,
+        )?;
+        decay.mapv_inplace(|el| -el.exp());
+        let Tents(decay) = (ctx, decay).into();
         Ok(Self {
             first: gk1(ctx, lm, "att.time_first")?,
             decay,
@@ -134,8 +131,8 @@ impl TryFrom<BuildCtx<'_, '_>> for FFNTime {
     #[instrument(skip_all, name = "convert_ffn_time_mix", level = "DEBUG")]
     fn try_from(bctx @ (ctx, lm): BuildCtx<'_, '_>) -> Result<Self> {
         Ok(Self {
-            mix_k: Mix(gk1(ctx, lm, "att.time_mix_k")?),
-            mix_r: Mix(gk1(ctx, lm, "att.time_mix_r")?),
+            mix_k: Mix(gk1(ctx, lm, "ffn.time_mix_k")?),
+            mix_r: Mix(gk1(ctx, lm, "ffn.time_mix_r")?),
         })
     }
 }
@@ -206,7 +203,8 @@ impl TryFrom<TensorDataMap<'_>> for RWKV {
 
         let ctx = ggml::Context::init(ctx_size);
 
-        let ln0 = LayerNorm::try_from((0, (&ctx, &layers[0])))?;
+        // let ln0 = LayerNorm::try_from((0, (&ctx, &layers[0])))?;
+        let ln0 = crate::simple::model::LayerNorm::<f32>::try_from((0, &layers[0]))?;
 
         info!("Loading {n_layers} layer(s):");
         let layers = layers
@@ -222,21 +220,32 @@ impl TryFrom<TensorDataMap<'_>> for RWKV {
         info!("Precomputing embedding... psyche!");
 
         // It's possible to just precompute the embeddings in advance.
-        let emb = gk2(&ctx, &nlm, "emb.weight")?;
+        let mut emba = <Ty as ConvertBF16Tensor<Array2<Ty>>>::convert_tensor(
+            nlm.get("emb.weight").ok_or_else(|| anyhow!("Bad format"))?,
+        )?;
+        let n_vocab = emba.shape()[0];
+        let n_embed = emba.shape()[1];
+
+        (0..n_vocab).for_each(|idx| {
+            use crate::model_traits::RunLayerNorm;
+            let idxemb = emba
+                .index_axis_mut(ndarray::Axis(0), idx)
+                .into_slice_memory_order()
+                .expect("Impossible: into_slice_memory_order failed!");
+            idxemb.copy_from_slice(&ln0.norm(&idxemb).into_raw_vec());
+        });
+        drop(ln0);
+        let Tents(emb) = (&ctx, emba).into();
+
+        // let emb = gk2(&ctx, &nlm, "emb.weight")?;
         let embne = emb.get_ne();
 
-        let n_embed = embne[1] as usize;
-        let n_vocab = embne[0] as usize;
-        info!("Loaded? {n_embed} -- {n_vocab}");
-
-        // (0..n_vocab).for_each(|idx| {
-        //     let idxemb = emb
-        //         .index_axis_mut(Axis(0), idx)
-        //         .into_slice_memory_order()
-        //         .expect("Impossible: into_slice_memory_order failed!");
-        //     idxemb.copy_from_slice(&ln0.norm(&idxemb).into_raw_vec());
-        // });
-        // drop(ln0);
+        // let n_vocab = embne[1] as usize;
+        // let n_embed = embne[0] as usize;
+        info!(
+            "Loaded? ({embne:?}) embed={n_embed} -- vocab={n_vocab}, -- {:?}",
+            emb.get_nb()
+        );
 
         info!("Loading non-layer tensors.");
 

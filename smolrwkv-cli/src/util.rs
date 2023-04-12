@@ -3,7 +3,7 @@ use std::io::Write;
 use anyhow::Result;
 use ndarray::{Array2, ArrayView1};
 
-use smolrwkv::{quantized::model::TensorQ2, simple::context::RWKVContext};
+use smolrwkv::{ggml, quantized::model::TensorQ2, simple::context::RWKVContext};
 
 /// Used for non-quantized tensors and values.
 pub type FloatType = f32;
@@ -11,6 +11,7 @@ pub type FloatType = f32;
 pub enum Ctx {
     FloatCtx(RWKVContext<FloatType, Array2<FloatType>>),
     QuantCtx(RWKVContext<FloatType, TensorQ2>),
+    GgmlCtx(ggml::context::RWKVContext),
 }
 
 impl Ctx {
@@ -18,6 +19,7 @@ impl Ctx {
         match self {
             Ctx::FloatCtx(ctx) => (ctx.rwkv.n_layers, ctx.rwkv.n_embed, ctx.rwkv.n_vocab),
             Ctx::QuantCtx(ctx) => (ctx.rwkv.n_layers, ctx.rwkv.n_embed, ctx.rwkv.n_vocab),
+            Ctx::GgmlCtx(ctx) => (ctx.rwkv.n_layers, ctx.rwkv.n_embed, ctx.rwkv.n_vocab),
         }
     }
 
@@ -25,6 +27,7 @@ impl Ctx {
         match self {
             Ctx::FloatCtx(ctx) => ctx.feed_prompt(s, f),
             Ctx::QuantCtx(ctx) => ctx.feed_prompt(s, f),
+            Ctx::GgmlCtx(ctx) => ctx.feed_prompt(s, f),
         }
     }
 
@@ -35,6 +38,7 @@ impl Ctx {
         match self {
             Ctx::FloatCtx(ctx) => ctx.infer_next_token(samplefun),
             Ctx::QuantCtx(ctx) => ctx.infer_next_token(samplefun),
+            Ctx::GgmlCtx(ctx) => ctx.infer_next_token(samplefun),
         }
     }
 }

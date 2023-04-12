@@ -56,31 +56,31 @@ fn go() -> Result<()> {
     let mm = mmap_file(modelfn)?;
     let tdm: TensorDataMap<'_> = (modelfn.clone(), mm.as_slice()).try_into()?;
 
-    {
+    let mut context = {
         use smolrwkv::ggml::{context::*, loader::*, model::*};
 
         let rwkv: RWKV = tdm.try_into()?;
-        let rwkvctx = RWKVContext::new(rwkv, tokenizer);
-        panic!("Farewell, cruel word!");
-    }
+        let rwkvctx = Ctx::GgmlCtx(RWKVContext::new(rwkv, tokenizer));
+        rwkvctx
+    };
 
-    let mut context = run_threadlimited(args.max_load_threads, move || {
-        anyhow::Ok(if args.no_quantized {
-            info!("Model type: non-quantized (full 32bit).");
-            Ctx::FloatCtx(
-                S::context::RWKVContext::<FloatType, Array2<FloatType>>::new(
-                    tdm.try_into()?,
-                    tokenizer,
-                ),
-            )
-        } else {
-            info!("Model type: 8 bit-quantized weights.");
-            Ctx::QuantCtx(S::context::RWKVContext::<FloatType, TensorQ2>::new(
-                tdm.try_into()?,
-                tokenizer,
-            ))
-        })
-    })?;
+    // let mut context = run_threadlimited(args.max_load_threads, move || {
+    //     anyhow::Ok(if args.no_quantized {
+    //         info!("Model type: non-quantized (full 32bit).");
+    //         Ctx::FloatCtx(
+    //             S::context::RWKVContext::<FloatType, Array2<FloatType>>::new(
+    //                 tdm.try_into()?,
+    //                 tokenizer,
+    //             ),
+    //         )
+    //     } else {
+    //         info!("Model type: 8 bit-quantized weights.");
+    //         Ctx::QuantCtx(S::context::RWKVContext::<FloatType, TensorQ2>::new(
+    //             tdm.try_into()?,
+    //             tokenizer,
+    //         ))
+    //     })
+    // })?;
 
     let mut do_sample = |probs: &ArrayView1<FloatType>| {
         Ok(sample_probs(
@@ -96,7 +96,7 @@ fn go() -> Result<()> {
     info!("Loaded: layers={n_layers}, embed={n_embed}, vocab={n_vocab}",);
 
     let max_tokens = args.max_tokens.unwrap_or(usize::MAX);
-    let (tcount, elapsed) = run_threadlimited(args.max_eval_threads, || {
+    let (tcount, elapsed) = {
         use std::time::Instant;
 
         context.feed_prompt(&args.prompt, Some(show_token))?;
@@ -112,7 +112,24 @@ fn go() -> Result<()> {
         }
         let etime = Instant::now();
         Ok((tcount, etime - stime))
-    })?;
+    }?;
+    // let (tcount, elapsed) = run_threadlimited(args.max_eval_threads, || {
+    //     use std::time::Instant;
+
+    //     context.feed_prompt(&args.prompt, Some(show_token))?;
+
+    //     let mut tcount = 0;
+    //     let stime = Instant::now();
+    //     while let Some(token) = context.infer_next_token(&mut do_sample)? {
+    //         show_token(token);
+    //         tcount += 1;
+    //         if tcount > max_tokens {
+    //             break;
+    //         }
+    //     }
+    //     let etime = Instant::now();
+    //     Ok((tcount, etime - stime))
+    // })?;
 
     println!(" [end of text]\n");
     let tps = tcount as f64 / (elapsed.as_millis() as f64 / 1000.0);
