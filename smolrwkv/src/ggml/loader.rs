@@ -12,10 +12,10 @@ use ggml::{Context, Tensor, Type as GT};
 use super::model::*;
 use crate::{
     loader::{TensorData, TensorDataMap},
-    util::ConvertBF16Tensor,
+    util::{bf16_tensor_to_f32_buf, ConvertBF16Tensor},
 };
 
-type Ty = f32;
+type ATy = f32;
 const GT32: ggml::Type = GT::F32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -41,8 +41,9 @@ struct BuildCtx<'a, 'b> {
     n_layers: usize,
     lnum: usize,
     ctx: &'a Context,
-    lm: &'a HashMap<String, TensorData<'b>>,
+    lm: HashMap<String, TensorData<'b>>,
     wtype: RwkvGgmlType,
+    buf: Vec<ATy>,
 }
 
 #[repr(transparent)]
@@ -54,11 +55,12 @@ impl From<Tensor> for Tents {
     }
 }
 
-fn quantize(bctx: &BuildCtx<'_, '_>, arr: Array2<Ty>) -> Tensor {
+fn quantize(bctx: &mut BuildCtx<'_, '_>, td: &TensorData<'_>) -> Tensor {
     let wtype = bctx.wtype;
 
-    let nels = arr.len();
-    let shp = arr.shape();
+    // Already verified it was f16
+    let nels = td.data.len() / 2;
+    let shp = &td.shape;
     let in_size = nels * 4;
     // FIXME: Verify this is safe, but 32bit -> 4bit shouldn't take more than 8bits per element
     // plus maybe an extra block. Riiight?
@@ -68,14 +70,14 @@ fn quantize(bctx: &BuildCtx<'_, '_>, arr: Array2<Ty>) -> Tensor {
     let out_size = unsafe {
         match wtype {
             RwkvGgmlType::Q4_0 => ggml_sys::ggml_quantize_q4_0(
-                arr.as_ptr(),
+                bctx.buf.as_ptr(),
                 output.as_mut_ptr() as *mut std::ffi::c_void,
                 nels as i32,
                 shp[1] as i32,
                 hist.as_mut_ptr(),
             ),
             RwkvGgmlType::Q4_1 => ggml_sys::ggml_quantize_q4_1(
-                arr.as_ptr(),
+                bctx.buf.as_ptr(),
                 output.as_mut_ptr() as *mut std::ffi::c_void,
                 nels as i32,
                 shp[1] as i32,
@@ -95,50 +97,52 @@ fn quantize(bctx: &BuildCtx<'_, '_>, arr: Array2<Ty>) -> Tensor {
 
 /// Helper function for extracting a 1d tensor from the HashMap by string key.
 /// Takes a closure to convert from the TensorData struct to a usable format.
-fn gk1(ctx: &Context, lm: &HashMap<String, TensorData<'_>>, key: &str) -> Result<Tensor> {
-    let Tents(t) = (
-        ctx,
-        <Ty as ConvertBF16Tensor<Array1<Ty>>>::convert_tensor(
-            lm.get(key).ok_or_else(|| anyhow!("Bad format"))?,
-        )?,
-    )
-        .into();
+fn gk1(bctx: &mut BuildCtx<'_, '_>, key: &str) -> Result<Tensor> {
+    let td = bctx.lm.get(key).ok_or_else(|| anyhow!("Bad format"))?;
+    bf16_tensor_to_f32_buf(td, &mut bctx.buf);
+    let shp = td
+        .shape
+        .iter()
+        .copied()
+        .filter(|i| *i != 1)
+        .collect::<Vec<_>>();
+    let t = bctx.ctx.new_tensor_1d(GT32, shp[0]);
+    unsafe { (t.data() as *mut f32).copy_from_nonoverlapping(bctx.buf.as_ptr(), bctx.buf.len()) }
     Ok(t)
 }
 
 /// Helper function for extracting a 2d tensor from the HashMap by string key.
 /// Takes a closure to convert from the TensorData struct to a usable format.
-fn gk2(ctx: &Context, lm: &HashMap<String, TensorData<'_>>, key: &str) -> Result<Tensor> {
-    let Tents(t) = (
-        ctx,
-        <Ty as ConvertBF16Tensor<Array2<Ty>>>::convert_tensor(
-            lm.get(key).ok_or_else(|| anyhow!("Bad format"))?,
-        )?,
-    )
-        .into();
+fn gk2(bctx: &mut BuildCtx<'_, '_>, key: &str) -> Result<Tensor> {
+    let td = bctx.lm.get(key).ok_or_else(|| anyhow!("Bad format"))?;
+    bf16_tensor_to_f32_buf(td, &mut bctx.buf);
+    let shp = &td.shape;
+    let t = bctx.ctx.new_tensor_2d(GT32, shp[1], shp[0]);
+    unsafe { (t.data() as *mut f32).copy_from_nonoverlapping(bctx.buf.as_ptr(), bctx.buf.len()) }
     Ok(t)
 }
 
-fn qgk2(bctx: &BuildCtx<'_, '_>, key: &str) -> Result<Tensor> {
+fn qgk2(bctx: &mut BuildCtx<'_, '_>, key: &str) -> Result<Tensor> {
     if bctx.wtype == RwkvGgmlType::Float32 {
-        return gk2(bctx.ctx, bctx.lm, key);
+        return gk2(bctx, key);
     }
-
-    let arr = <Ty as ConvertBF16Tensor<Array2<Ty>>>::convert_tensor(
-        bctx.lm.get(key).ok_or_else(|| anyhow!("Bad format"))?,
-    )?;
+    let td = bctx
+        .lm
+        .get(key)
+        .ok_or_else(|| anyhow!("Bad format"))?
+        .clone();
     info!(
         "[{}/{}]: Quantizing {key}({:?})",
-        bctx.n_layers,
         bctx.lnum + 1,
-        arr.shape()
+        bctx.n_layers,
+        td.shape
     );
-    let t = quantize(bctx, arr);
-    Ok(t)
+    bf16_tensor_to_f32_buf(&td, &mut bctx.buf);
+    Ok(quantize(bctx, &td))
 }
 
-impl From<(&Context, Array1<Ty>)> for Tents {
-    fn from((ctx, arr): (&Context, Array1<Ty>)) -> Self {
+impl From<(&Context, Array1<ATy>)> for Tents {
+    fn from((ctx, arr): (&Context, Array1<ATy>)) -> Self {
         let shp = arr.shape();
         let t = ctx.new_tensor_1d(GT32, shp[0]);
         unsafe { (t.data() as *mut f32).copy_from_nonoverlapping(arr.as_ptr(), arr.len()) }
@@ -146,8 +150,8 @@ impl From<(&Context, Array1<Ty>)> for Tents {
     }
 }
 
-impl From<(&Context, Array2<Ty>)> for Tents {
-    fn from((ctx, arr): (&Context, Array2<Ty>)) -> Self {
+impl From<(&Context, Array2<ATy>)> for Tents {
+    fn from((ctx, arr): (&Context, Array2<ATy>)) -> Self {
         let shp = arr.shape();
         // NOTE: The order for shapes is reversed in GGML.
         let t = ctx.new_tensor_2d(GT32, shp[1], shp[0]);
@@ -156,45 +160,45 @@ impl From<(&Context, Array2<Ty>)> for Tents {
     }
 }
 
-impl TryFrom<(usize, &BuildCtx<'_, '_>)> for LayerNorm {
+impl TryFrom<(usize, &mut BuildCtx<'_, '_>)> for LayerNorm {
     type Error = Error;
 
     #[instrument(skip_all, name = "convert_layer_norm", level = "DEBUG")]
-    fn try_from((idx, bctx): (usize, &BuildCtx<'_, '_>)) -> Result<Self> {
+    fn try_from((idx, bctx): (usize, &mut BuildCtx<'_, '_>)) -> Result<Self> {
         Ok(Self {
-            weight: gk1(bctx.ctx, bctx.lm, &format!("ln{idx}.weight"))?,
-            bias: gk1(bctx.ctx, bctx.lm, &format!("ln{idx}.bias"))?,
+            weight: gk1(bctx, &format!("ln{idx}.weight"))?,
+            bias: gk1(bctx, &format!("ln{idx}.bias"))?,
         })
     }
 }
 
-impl TryFrom<&BuildCtx<'_, '_>> for AttTime {
+impl TryFrom<&mut BuildCtx<'_, '_>> for AttTime {
     type Error = Error;
 
     #[instrument(skip_all, err, name = "convert_attn_time_mix", level = "DEBUG")]
-    fn try_from(bctx: &BuildCtx<'_, '_>) -> Result<Self> {
-        let (ctx, lm) = (bctx.ctx, bctx.lm);
-        let mut decay = <Ty as ConvertBF16Tensor<Array1<Ty>>>::convert_tensor(
+    fn try_from(bctx: &mut BuildCtx<'_, '_>) -> Result<Self> {
+        let (ctx, lm) = (bctx.ctx, &bctx.lm);
+        let mut decay = <ATy as ConvertBF16Tensor<Array1<ATy>>>::convert_tensor(
             lm.get("att.time_decay")
                 .ok_or_else(|| anyhow!("Bad format"))?,
         )?;
         decay.mapv_inplace(|el| -el.exp());
         let Tents(decay) = (ctx, decay).into();
         Ok(Self {
-            first: gk1(ctx, lm, "att.time_first")?,
+            first: gk1(bctx, "att.time_first")?,
             decay,
-            mix_k: Mix(gk1(ctx, lm, "att.time_mix_k")?),
-            mix_v: Mix(gk1(ctx, lm, "att.time_mix_v")?),
-            mix_r: Mix(gk1(ctx, lm, "att.time_mix_r")?),
+            mix_k: Mix(gk1(bctx, "att.time_mix_k")?),
+            mix_v: Mix(gk1(bctx, "att.time_mix_v")?),
+            mix_r: Mix(gk1(bctx, "att.time_mix_r")?),
         })
     }
 }
 
-impl TryFrom<&BuildCtx<'_, '_>> for Attention {
+impl TryFrom<&mut BuildCtx<'_, '_>> for Attention {
     type Error = Error;
 
     #[instrument(skip_all, name = "convert_att", level = "DEBUG")]
-    fn try_from(bctx: &BuildCtx<'_, '_>) -> Result<Self> {
+    fn try_from(bctx: &mut BuildCtx<'_, '_>) -> Result<Self> {
         Ok(Self {
             key_weight: qgk2(bctx, "att.key.weight")?,
             value_weight: qgk2(bctx, "att.value.weight")?,
@@ -205,24 +209,23 @@ impl TryFrom<&BuildCtx<'_, '_>> for Attention {
     }
 }
 
-impl TryFrom<&BuildCtx<'_, '_>> for FFNTime {
+impl TryFrom<&mut BuildCtx<'_, '_>> for FFNTime {
     type Error = Error;
 
     #[instrument(skip_all, name = "convert_ffn_time_mix", level = "DEBUG")]
-    fn try_from(bctx: &BuildCtx<'_, '_>) -> Result<Self> {
-        let (ctx, lm) = (bctx.ctx, bctx.lm);
+    fn try_from(bctx: &mut BuildCtx<'_, '_>) -> Result<Self> {
         Ok(Self {
-            mix_k: Mix(gk1(ctx, lm, "ffn.time_mix_k")?),
-            mix_r: Mix(gk1(ctx, lm, "ffn.time_mix_r")?),
+            mix_k: Mix(gk1(bctx, "ffn.time_mix_k")?),
+            mix_r: Mix(gk1(bctx, "ffn.time_mix_r")?),
         })
     }
 }
 
-impl TryFrom<&BuildCtx<'_, '_>> for FeedForwardNetwork {
+impl TryFrom<&mut BuildCtx<'_, '_>> for FeedForwardNetwork {
     type Error = Error;
 
     #[instrument(skip_all, name = "convert_ffn", level = "DEBUG")]
-    fn try_from(bctx: &BuildCtx<'_, '_>) -> Result<Self> {
+    fn try_from(bctx: &mut BuildCtx<'_, '_>) -> Result<Self> {
         Ok(FeedForwardNetwork {
             key_weight: qgk2(bctx, "ffn.key.weight")?,
             value_weight: qgk2(bctx, "ffn.value.weight")?,
@@ -232,15 +235,15 @@ impl TryFrom<&BuildCtx<'_, '_>> for FeedForwardNetwork {
     }
 }
 
-impl TryFrom<&BuildCtx<'_, '_>> for RWKVLayer {
+impl TryFrom<&mut BuildCtx<'_, '_>> for RWKVLayer {
     type Error = Error;
 
     #[instrument(skip_all, name = "convert_layer", level = "DEBUG")]
-    fn try_from(bctx: &BuildCtx<'_, '_>) -> Result<Self> {
+    fn try_from(bctx: &mut BuildCtx<'_, '_>) -> Result<Self> {
         Ok(Self {
-            ln_tm: LayerNorm::try_from((1, bctx))?,
-            ln_cm: LayerNorm::try_from((2, bctx))?,
-            att: Attention::try_from(bctx)?,
+            ln_tm: LayerNorm::try_from((1, &mut *bctx))?,
+            ln_cm: LayerNorm::try_from((2, &mut *bctx))?,
+            att: Attention::try_from(&mut *bctx)?,
             ffn: FeedForwardNetwork::try_from(bctx)?,
         })
     }
@@ -301,7 +304,7 @@ impl TryFrom<(RwkvGgmlType, TensorDataMap<'_>)> for RWKV {
         let emb = {
             let ln0 = crate::simple::model::LayerNorm::<f32>::try_from((0, &layers[0]))?;
             info!("Precomputing embedding...");
-            let mut emba = <Ty as ConvertBF16Tensor<Array2<Ty>>>::convert_tensor(
+            let mut emba = <ATy as ConvertBF16Tensor<Array2<ATy>>>::convert_tensor(
                 nlm.get("emb.weight").ok_or_else(|| anyhow!("Bad format"))?,
             )?;
 
@@ -321,35 +324,38 @@ impl TryFrom<(RwkvGgmlType, TensorDataMap<'_>)> for RWKV {
 
         info!("Loading {n_layers} layer(s):");
 
+        let mut bctx = BuildCtx {
+            n_layers,
+            lnum: 0,
+            ctx: &ctx,
+            lm: Default::default(),
+            wtype,
+            buf: Vec::with_capacity(256 * 1024 * 1024),
+        };
         let layers = layers
             .into_iter()
             .enumerate()
             .map(|(lnum, lm)| {
-                let bctx = BuildCtx {
-                    n_layers,
-                    lnum,
-                    ctx: &ctx,
-                    lm: &lm,
-                    wtype,
-                };
+                bctx.lnum = lnum;
+                bctx.lm = lm;
                 if wtype == RwkvGgmlType::Float32 {
                     print!(".");
                     stdout().flush().ok();
                 }
-                RWKVLayer::try_from(&bctx)
+                RWKVLayer::try_from(&mut bctx)
             })
             .collect::<Result<Vec<_>, _>>()?;
 
         println!();
 
         info!("Loading non-layer tensors.");
-
+        bctx.lm = nlm;
         Ok(RWKV {
             emb,
-            head_weight: gk2(&ctx, &nlm, "head.weight")?,
+            head_weight: gk2(&mut bctx, "head.weight")?,
             ln_out: LayerNorm {
-                weight: gk1(&ctx, &nlm, "ln_out.weight")?,
-                bias: gk1(&ctx, &nlm, "ln_out.bias")?,
+                weight: gk1(&mut bctx, "ln_out.weight")?,
+                bias: gk1(&mut bctx, "ln_out.bias")?,
             },
             layers,
             n_layers,
