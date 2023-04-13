@@ -10,11 +10,23 @@ const DEFAULT_MODEL: &str = "./RWKV-4-Pile-430M-20220808-8066.safetensors";
 const DEFAULT_TOKENIZER: &str = "./20B_tokenizer.json";
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
-#[value(rename_all = "lower")]
 pub enum EvalType {
+    #[value(name = "ndf32")]
+    /// ndarray-backed 32 bit floats. Uses a lot of memory.
     NDf32,
+    #[value(name = "ndq8")]
+    /// ndarray-backed 8 bit quantized. Better memory usage but quite slow.
     NDu8,
+    #[value(name = "ggmlf32")]
+    /// GGML-backed 32 bit. As above, uses a lot of memory.
     GGMLf32,
+    #[value(name = "ggmlq4_0")]
+    /// GGML-backed 4 bit quantized, method 1. Poor quality.
+    GGMLQ4_0,
+    #[value(name = "ggmlq4_1")]
+    /// GGML-backed 4 bit quantized, method 2. Decenent quality,
+    /// but slower (to load?)
+    GGMLQ4_1,
 }
 
 #[derive(Clone, Debug, Parser)]

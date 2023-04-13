@@ -31,3 +31,6 @@ optional = true
 
 [dependencies.ggml]
 path = "../../llama-rs/ggml"
+
+[dependencies.ggml-sys]
+path = "../../llama-rs/ggml-sys"

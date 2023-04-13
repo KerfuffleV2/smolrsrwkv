@@ -59,7 +59,7 @@ fn go() -> Result<()> {
         args::EvalType::NDf32 => {
             Ctx::NdFloat32(run_threadlimited(args.max_load_threads, move || {
                 anyhow::Ok({
-                    info!("Model type: non-quantized (full 32bit).");
+                    info!("Backend type: NDArray non-quantized (full 32bit).");
                     S::context::RWKVContext::<FloatType, Array2<FloatType>>::new(
                         tdm.try_into()?,
                         tokenizer,
@@ -71,16 +71,22 @@ fn go() -> Result<()> {
         args::EvalType::NDu8 => {
             Ctx::NdQuant8(run_threadlimited(args.max_load_threads, move || {
                 anyhow::Ok({
-                    info!("Model type: 8 bit-quantized weights.");
+                    info!("Backend type: NDArray 8 bit-quantized weights.");
                     S::context::RWKVContext::<FloatType, TensorQ2>::new(tdm.try_into()?, tokenizer)
                 })
             })?)
         }
-        args::EvalType::GGMLf32 => {
-            use smolrwkv::ggml::context::RWKVContext;
-            info!("Model type: GGML 32 bit.");
+        args::EvalType::GGMLf32 | args::EvalType::GGMLQ4_0 | args::EvalType::GGMLQ4_1 => {
+            use smolrwkv::ggml::{context::RWKVContext, loader::RwkvGgmlType};
+            let wtype = match args.eval_mode {
+                args::EvalType::GGMLf32 => RwkvGgmlType::Float32,
+                args::EvalType::GGMLQ4_0 => RwkvGgmlType::Q4_0,
+                args::EvalType::GGMLQ4_1 => RwkvGgmlType::Q4_1,
+                _ => panic!("Impossible: Bad eval mode!"),
+            };
+            info!("Backend type: GGML {wtype:?}");
             Ctx::GgmlFloat32(RWKVContext::new(
-                tdm.try_into()?,
+                (wtype, tdm).try_into()?,
                 tokenizer,
                 args.max_eval_threads,
             ))

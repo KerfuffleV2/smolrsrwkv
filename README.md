@@ -1,5 +1,13 @@
 # Smol Rust RWKV
 
+## Dev Branch Note
+
+This branch currently needs a patched version of `ggml` and `ggml-sys` from the `llama-rs` project.
+
+You can find it here: https://github.com/KerfuffleV2/llama-rs/tree/experiment-ggml-map-ops
+
+`smolrwkv/Cargo.toml` is set up to look for it checked out in `../llama-rs` relative to this repo's directory.
+
 ## What is it?
 
 A simple example of the RWKV approach to language models written in Rust by someone that
