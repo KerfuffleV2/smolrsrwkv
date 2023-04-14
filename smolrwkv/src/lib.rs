@@ -4,6 +4,8 @@ pub mod quantized;
 /// Simple model/evaluation (f32)
 pub mod simple;
 
+// GGML model/evaluation.
+#[cfg(feature = "ggml")]
 pub mod ggml;
 
 /// Traits representing the components involved in evaluating RWKV.

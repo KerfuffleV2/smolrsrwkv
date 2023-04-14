@@ -76,6 +76,7 @@ fn go() -> Result<()> {
                 })
             })?)
         }
+        #[cfg(feature = "ggml")]
         args::EvalType::GGMLf32 | args::EvalType::GGMLQ4_0 | args::EvalType::GGMLQ4_1 => {
             use smolrwkv::ggml::{context::RWKVContext, loader::RwkvGgmlType};
             let wtype = match args.eval_mode {
@@ -85,7 +86,7 @@ fn go() -> Result<()> {
                 _ => panic!("Impossible: Bad eval mode!"),
             };
             info!("Backend type: GGML {wtype:?}");
-            Ctx::GgmlFloat32(RWKVContext::new(
+            Ctx::Ggml(RWKVContext::new(
                 (wtype, tdm).try_into()?,
                 tokenizer,
                 args.max_eval_threads,
@@ -145,7 +146,8 @@ fn go() -> Result<()> {
             let etime = Instant::now();
             Ok((tcount, etime - stime))
         }),
-        Ctx::GgmlFloat32(mut context) => {
+        #[cfg(feature = "ggml")]
+        Ctx::Ggml(mut context) => {
             use std::time::Instant;
 
             context.feed_prompt(args.prompt, Some(show_token))?;

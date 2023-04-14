@@ -233,8 +233,8 @@ mod ops_funs {
     pub unsafe extern "C" fn max_fun(
         n: std::os::raw::c_int,
         dst: *mut f32,
-        src0: *mut f32,
-        src1: *mut f32,
+        src0: *const f32,
+        src1: *const f32,
     ) {
         let n = n as usize;
         let dst = std::slice::from_raw_parts_mut(dst, n);
@@ -252,8 +252,8 @@ mod ops_funs {
     pub unsafe extern "C" fn sub_exp_fun(
         n: std::os::raw::c_int,
         dst: *mut f32,
-        src0: *mut f32,
-        src1: *mut f32,
+        src0: *const f32,
+        src1: *const f32,
     ) {
         let n = n as usize;
         let dst = std::slice::from_raw_parts_mut(dst, n);
@@ -271,8 +271,8 @@ mod ops_funs {
     pub unsafe extern "C" fn div_fun(
         n: std::os::raw::c_int,
         dst: *mut f32,
-        src0: *mut f32,
-        src1: *mut f32,
+        src0: *const f32,
+        src1: *const f32,
     ) {
         let n = n as usize;
         let dst = std::slice::from_raw_parts_mut(dst, n);

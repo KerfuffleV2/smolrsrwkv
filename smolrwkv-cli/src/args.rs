@@ -14,15 +14,22 @@ pub enum EvalType {
     #[value(name = "ndf32")]
     /// ndarray-backed 32 bit floats. Uses a lot of memory.
     NDf32,
+
     #[value(name = "ndq8")]
     /// ndarray-backed 8 bit quantized. Better memory usage but quite slow.
     NDu8,
+
+    #[cfg(feature = "ggml")]
     #[value(name = "ggmlf32")]
     /// GGML-backed 32 bit. As above, uses a lot of memory.
     GGMLf32,
+
+    #[cfg(feature = "ggml")]
     #[value(name = "ggmlq4_0")]
     /// GGML-backed 4 bit quantized, method 1. Poor quality.
     GGMLQ4_0,
+
+    #[cfg(feature = "ggml")]
     #[value(name = "ggmlq4_1")]
     /// GGML-backed 4 bit quantized, method 2. Decenent quality,
     /// but slower (to load?)

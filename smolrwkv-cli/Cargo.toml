@@ -4,6 +4,11 @@ version = { workspace = true }
 edition = "2021"
 resolver = "2"
 
+[features]
+default = ["ggml", "torch"]
+ggml = ["smolrwkv/ggml"]
+torch = ["smolrwkv/torch"]
+
 [dependencies]
 mmap-rs = "0.5"
 anyhow = "1"

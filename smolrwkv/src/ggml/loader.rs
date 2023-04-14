@@ -95,10 +95,6 @@ fn quantize(bctx: &mut BuildCtx<'_, '_>, td: &TensorData<'_>) -> Tensor {
         }
     };
     unsafe { bctx.qbuf.set_len(out_size) };
-    info!(
-        "--> QUANT: len {in_size} -> {out_size} ({})",
-        in_size - out_size
-    );
     let t = bctx.ctx.new_tensor_2d(wtype.into(), shp[1], shp[0]);
     unsafe { (t.data() as *mut u8).copy_from_nonoverlapping(bctx.qbuf.as_ptr(), out_size) }
     t

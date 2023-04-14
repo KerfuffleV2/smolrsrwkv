@@ -6,9 +6,10 @@ edition = "2021"
 resolver = "2"
 
 [features]
-default = ["torch", "simd"]
+default = ["torch", "ggml"]
 torch = ["dep:repugnant-pickle"]
 simd = ["dep:simba"]
+ggml = ["dep:ggml", "dep:ggml-sys"]
 
 [dependencies]
 safetensors = { version = "0.3", default-features = false }
@@ -30,7 +31,11 @@ features = ["torch"]
 optional = true
 
 [dependencies.ggml]
-path = "../../llama-rs/ggml"
+optional = true
+git = "https://github.com/kerfufflev2/llama-rs"
+branch = "experiment-ggml-map-ops"
 
 [dependencies.ggml-sys]
-path = "../../llama-rs/ggml-sys"
+optional = true
+git = "https://github.com/kerfufflev2/llama-rs"
+branch = "experiment-ggml-map-ops"
