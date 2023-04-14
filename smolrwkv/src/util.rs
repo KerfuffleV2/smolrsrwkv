@@ -74,6 +74,7 @@ pub fn mmap_file(s: &str) -> Result<mmap_rs::Mmap> {
             .and_then(|mo| {
                 mo.with_file(fp, 0)
                     .with_flags(MmapFlags::NO_CORE_DUMP)
+                    // .with_flags(MmapFlags::COPY_ON_WRITE)
                     .map()
             })
             .map_err(|e| anyhow!(e))
@@ -114,7 +115,9 @@ pub fn bf16_tensor_to_f32_buf(tensor: &TensorData<'_>, buf: &mut Vec<f32>) {
     assert_ne!(tensor.data.len() & 1, 1, "Odd size for BF16 tensor input");
     let elcount = tensor.data.len() / 2;
     buf.clear();
+    // println!("Pre: Capacity: {}", buf.capacity());
     buf.reserve(elcount);
+    // println!("Post: Capacity: {}", buf.capacity());
 
     tensor
         .data
@@ -126,6 +129,19 @@ pub fn bf16_tensor_to_f32_buf(tensor: &TensorData<'_>, buf: &mut Vec<f32>) {
     unsafe {
         buf.set_len(elcount);
     }
+}
+
+pub fn bf16_tensor_to_f32_slice(tensor: &TensorData<'_>, buf: &mut [f32]) {
+    assert_eq!(tensor.dtype, TensorType::BFloat16, "Expected BF16 tensor");
+    assert_ne!(tensor.data.len() & 1, 1, "Odd size for BF16 tensor input");
+    let elcount = tensor.data.len() / 2;
+    assert_eq!(buf.len(), elcount, "Buffer too small!");
+
+    tensor
+        .data
+        .chunks_exact(2)
+        .zip(buf[0..elcount].iter_mut())
+        .for_each(|(hbytes, dst)| *dst = half::bf16::from_le_bytes([hbytes[0], hbytes[1]]).to_f32())
 }
 
 /// Magical stuff I don't understand too well. It takes the list of probabilities

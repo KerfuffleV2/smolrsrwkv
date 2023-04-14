@@ -163,7 +163,7 @@ fn go() -> Result<()> {
             let used_mem = context.rwkv.ctx.used_mem();
             println!();
             info!(
-                "GGML memory used: {used_mem} ({}GiB)",
+                "GGML memory used: {:.3}GiB",
                 (used_mem as f64) / (1024.0f64 * 1024.0 * 1024.0)
             );
             Ok((tcount, etime - stime))
