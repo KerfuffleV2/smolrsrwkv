@@ -74,7 +74,6 @@ fn quantize(bctx: &mut BuildCtx<'_, '_>, td: &TensorData<'_>) -> Tensor {
         .reserve((in_size / 4) + ggml::blck_size(wtype.into()));
 
     let mut hist = [0i64; 16];
-    // output.fill(0);
     let out_size = unsafe {
         match wtype {
             RwkvGgmlType::Q4_0 => ggml_sys::ggml_quantize_q4_0(
@@ -103,8 +102,10 @@ fn quantize(bctx: &mut BuildCtx<'_, '_>, td: &TensorData<'_>) -> Tensor {
 /// Helper function for extracting a 1d tensor from the HashMap by string key.
 /// Takes a closure to convert from the TensorData struct to a usable format.
 fn gk1(bctx: &mut BuildCtx<'_, '_>, key: &str) -> Result<Tensor> {
-    let td = bctx.lm.get(key).ok_or_else(|| anyhow!("Bad format"))?;
-
+    let td = bctx
+        .lm
+        .remove(key)
+        .map_or_else(|| Err(anyhow!("Missing tensor: {key}")), Ok)?;
     let shp = td
         .shape
         .iter()
@@ -112,7 +113,7 @@ fn gk1(bctx: &mut BuildCtx<'_, '_>, key: &str) -> Result<Tensor> {
         .filter(|i| *i != 1)
         .collect::<Vec<_>>();
     let t = bctx.ctx.new_tensor_1d(GT32, shp[0]);
-    bf16_tensor_to_f32_buf(td, &mut bctx.buf);
+    bf16_tensor_to_f32_buf(&td, &mut bctx.buf);
     unsafe { (t.data() as *mut f32).copy_from_nonoverlapping(bctx.buf.as_ptr(), bctx.buf.len()) }
     Ok(t)
 }
@@ -120,8 +121,12 @@ fn gk1(bctx: &mut BuildCtx<'_, '_>, key: &str) -> Result<Tensor> {
 /// Helper function for extracting a 2d tensor from the HashMap by string key.
 /// Takes a closure to convert from the TensorData struct to a usable format.
 fn gk2(bctx: &mut BuildCtx<'_, '_>, key: &str) -> Result<Tensor> {
-    let td = bctx.lm.get(key).ok_or_else(|| anyhow!("Bad format"))?;
-    bf16_tensor_to_f32_buf(td, &mut bctx.buf);
+    let td = bctx
+        .lm
+        .remove(key)
+        .map_or_else(|| Err(anyhow!("Missing tensor: {key}")), Ok)?;
+    // let td = bctx.lm.get(key).ok_or_else(|| anyhow!("Bad format"))?;
+    bf16_tensor_to_f32_buf(&td, &mut bctx.buf);
     let shp = &td.shape;
     let t = bctx.ctx.new_tensor_2d(GT32, shp[1], shp[0]);
     unsafe { (t.data() as *mut f32).copy_from_nonoverlapping(bctx.buf.as_ptr(), bctx.buf.len()) }
@@ -134,9 +139,8 @@ fn qgk2(bctx: &mut BuildCtx<'_, '_>, key: &str) -> Result<Tensor> {
     }
     let td = bctx
         .lm
-        .get(key)
-        .ok_or_else(|| anyhow!("Bad format"))?
-        .clone();
+        .remove(key)
+        .map_or_else(|| Err(anyhow!("Missing tensor: {key}")), Ok)?;
     info!(
         "[{}/{}]: Quantizing {key}({:?})",
         bctx.lnum + 1,
@@ -183,13 +187,14 @@ impl TryFrom<&mut BuildCtx<'_, '_>> for AttTime {
 
     #[instrument(skip_all, err, name = "convert_attn_time_mix", level = "DEBUG")]
     fn try_from(bctx: &mut BuildCtx<'_, '_>) -> Result<Self> {
-        let (ctx, lm) = (bctx.ctx, &bctx.lm);
-        let mut decay = <ATy as ConvertBF16Tensor<Array1<ATy>>>::convert_tensor(
-            lm.get("att.time_decay")
-                .ok_or_else(|| anyhow!("Bad format"))?,
-        )?;
+        let key = "att.time_decay";
+        let td = bctx
+            .lm
+            .remove(key)
+            .map_or_else(|| Err(anyhow!("Missing tensor: {key}")), Ok)?;
+        let mut decay = <ATy as ConvertBF16Tensor<Array1<ATy>>>::convert_tensor(&td)?;
         decay.mapv_inplace(|el| -el.exp());
-        let Tents(decay) = (ctx, decay).into();
+        let Tents(decay) = (bctx.ctx, decay).into();
         Ok(Self {
             first: gk1(bctx, "att.time_first")?,
             decay,
