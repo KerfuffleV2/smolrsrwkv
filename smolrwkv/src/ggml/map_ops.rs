@@ -10,7 +10,7 @@ mod ops_funs {
     const SIMD_CHUNKSIZE: usize = 8;
     type SimdTyp = WideF32x8;
 
-    pub unsafe extern "C" fn one_minus_fun(n: c_int, dst: *mut f32, src: *mut f32) {
+    pub unsafe extern "C" fn one_minus_fun(n: c_int, dst: *mut f32, src: *const f32) {
         let n = n as usize;
         let dst = slice::from_raw_parts_mut(dst, n);
         let src = slice::from_raw_parts(src, n);
@@ -32,7 +32,7 @@ mod ops_funs {
         }
     }
 
-    pub unsafe extern "C" fn sigmoid_fun(n: c_int, dst: *mut f32, src: *mut f32) {
+    pub unsafe extern "C" fn sigmoid_fun(n: c_int, dst: *mut f32, src: *const f32) {
         let n = n as usize;
         let dst = slice::from_raw_parts_mut(dst, n);
         let src = slice::from_raw_parts(src, n);
@@ -58,7 +58,7 @@ mod ops_funs {
         }
     }
 
-    pub unsafe extern "C" fn relu_squared_fun(n: c_int, dst: *mut f32, src: *mut f32) {
+    pub unsafe extern "C" fn relu_squared_fun(n: c_int, dst: *mut f32, src: *const f32) {
         let n = n as usize;
         let dst = slice::from_raw_parts_mut(dst, n);
         let src = slice::from_raw_parts(src, n);
@@ -84,7 +84,7 @@ mod ops_funs {
         }
     }
 
-    pub unsafe extern "C" fn max_fun(n: c_int, dst: *mut f32, src0: *mut f32, src1: *mut f32) {
+    pub unsafe extern "C" fn max_fun(n: c_int, dst: *mut f32, src0: *const f32, src1: *const f32) {
         let n = n as usize;
         let dst = slice::from_raw_parts_mut(dst, n);
         let src0 = slice::from_raw_parts(src0, n);
@@ -119,7 +119,12 @@ mod ops_funs {
         }
     }
 
-    pub unsafe extern "C" fn sub_exp_fun(n: c_int, dst: *mut f32, src0: *mut f32, src1: *mut f32) {
+    pub unsafe extern "C" fn sub_exp_fun(
+        n: c_int,
+        dst: *mut f32,
+        src0: *const f32,
+        src1: *const f32,
+    ) {
         let n = n as usize;
         let dst = slice::from_raw_parts_mut(dst, n);
         let src0 = slice::from_raw_parts(src0, n);
@@ -155,7 +160,7 @@ mod ops_funs {
         }
     }
 
-    pub unsafe extern "C" fn div_fun(n: c_int, dst: *mut f32, src0: *mut f32, src1: *mut f32) {
+    pub unsafe extern "C" fn div_fun(n: c_int, dst: *mut f32, src0: *const f32, src1: *const f32) {
         let n = n as usize;
         let dst = slice::from_raw_parts_mut(dst, n);
         let src0 = slice::from_raw_parts(src0, n);
@@ -195,7 +200,7 @@ mod ops_funs {
 mod ops_funs {
     use std::{os::raw::c_int, slice};
 
-    pub unsafe extern "C" fn one_minus_fun(n: c_int, dst: *mut f32, src: *mut f32) {
+    pub unsafe extern "C" fn one_minus_fun(n: c_int, dst: *mut f32, src: *const f32) {
         let n = n as usize;
         let dst = slice::from_raw_parts_mut(dst, n);
         let src = slice::from_raw_parts(src, n);
@@ -205,7 +210,7 @@ mod ops_funs {
             .for_each(|(dstel, srcel)| *dstel = 1.0 - *srcel);
     }
 
-    pub unsafe extern "C" fn sigmoid_fun(n: c_int, dst: *mut f32, src: *mut f32) {
+    pub unsafe extern "C" fn sigmoid_fun(n: c_int, dst: *mut f32, src: *const f32) {
         let n = n as usize;
         let dst = slice::from_raw_parts_mut(dst, n);
         let src = slice::from_raw_parts(src, n);
@@ -215,7 +220,7 @@ mod ops_funs {
             .for_each(|(dstel, srcel)| *dstel = 1.0 / (1.0 + (-(*srcel)).exp()));
     }
 
-    pub unsafe extern "C" fn relu_squared_fun(n: c_int, dst: *mut f32, src: *mut f32) {
+    pub unsafe extern "C" fn relu_squared_fun(n: c_int, dst: *mut f32, src: *const f32) {
         let n = n as usize;
         let dst = slice::from_raw_parts_mut(dst, n);
         let src = slice::from_raw_parts(src, n);
