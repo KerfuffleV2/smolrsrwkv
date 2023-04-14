@@ -2,8 +2,8 @@
 
 ## What is it?
 
-A simple example of the RWKV approach to language models written in Rust by someone that
-knows basically nothing about math or neural networks. Very, very heavily based on the
+An example of the RWKV approach to language models written in Rust by someone that
+knows very little about math or neural networks. The initial version was very, very heavily based on the
 amazing information and Python example here: https://johanwind.github.io/2023/03/23/rwkv_details.html
 
 Also see the RWKV creator's repository: https://github.com/BlinkDL/ChatRWKV/
@@ -11,18 +11,14 @@ Also see the RWKV creator's repository: https://github.com/BlinkDL/ChatRWKV/
 ## Features
 
 1. Written in Rust. Static typing can really help when trying to understand something, since it's clear what type of thing every object is.
-2. Relatively clear/simple code.
-3. Doesn't depend on massive frameworks like Torch or Cuda.
-4. Can use all threads/cores for inference.
-5. Supports float32 and 8bit inference.
-
-Currently, the primary goal here isn't to create an application or library suitable for end users but instead just to provide a
-clear example for other people who are aiming to implement RWKV.
+2. Doesn't depend on massive frameworks like Torch or Cuda.
+3. Can use all threads/cores for inference.
+4. Supports float32 and 8bit inference as well as 4bit inference with GGML.
 
 ## Shortcomings
 
-1. Not optimized for performance.
-2. Can only use 32bit or 8bit mode for models. (Models are always stored as full 32bit).
+1. Not really optimized for performance.
+2. Can only quantize on the fly (can by slow for big models).
 3. Can only run inference on CPU.
 
 If loading in 32bit mode it uses a _lot_ of memory. The 3B model uses around 11GB RAM and the 7B one might _just_ fit on a 32GB machine
@@ -31,16 +27,13 @@ it will drop down once loading has completed.
 
 ## How can I use it?
 
-You'll need Rust set up. You'll probably want a Python environment activated with PyTorch and safetensors packages available.
+You'll need Rust and Cargo set up: https://www.rust-lang.org/learn/get-started
 
-You will need to download this file (about 820MB): https://huggingface.co/BlinkDL/rwkv-4-pile-430m/resolve/main/RWKV-4-Pile-430M-20220808-8066.pth
+You will need to download a RWKV model. Here's a link to get you started (about 820MB): https://huggingface.co/BlinkDL/rwkv-4-pile-430m/resolve/main/RWKV-4-Pile-430M-20220808-8066.pth
 
 Also the tokenizer here: https://github.com/BlinkDL/ChatRWKV/blob/main/20B_tokenizer.json
 
-You can optionally convert the `.pth` model file to SafeTensors format. Look at
-[`utils/pth_to_safetensors.py`](utils/pth_to_safetensors.py) for an example.
-
-PyTorch model files _can_ be loaded directly now: If the files ends with `.pt` or `.pth` it will be loaded as a PyTorch
+PyTorch model files can be loaded directly. If the files ends with `.pt` or `.pth` it will be loaded as a PyTorch
 model. If it ends with `.st` or `.safetensors` then it will be loaded as SafeTensors. ***Note***: The PyTorch support
 is currently experimental and may not function correctly. You will likely just immediately get an error if there is a problem
 so it shouldn't be dangerous to try that approach. If you want, you can disable the `torch` feature and only build
@@ -51,7 +44,29 @@ it's likely everything will be insanely slow. Also try `cargo run --release -- -
 
 **Note**: The default is to use all logical cores, see the commandline options.
 
+You can optionally convert the `.pth` model file to SafeTensors format. Look at
+[`utils/pth_to_safetensors.py`](utils/pth_to_safetensors.py) for an example.
+To do this, you'll need the `safetensors` and `torch` Python packages set up.
+I suggest doing this in a virtual environment. Currently there isn't much of an
+advantage to this step as the Torch files can be loaded directly in the current
+version.
+
+## GGML Dev Note
+
+GGML support currently needs a patched version of `ggml` and `ggml-sys` from the `llama-rs` project.
+
+The `Cargo.toml` is set up to point to the correct branch in my fork, but this will go away once the
+necessary changes are merged into GGML. Naturally this repo will be updated, but bear in mind
+your compiles may start failing eventually if you're trying to use an older version, since eventually
+that branch will be removed.
+
 ## How it works
+
+**Note:** This part is kind of outdated now. I still recommend reading the links below though. Note also
+that that description is based on a simpler version of the RWKV model with only four states per layer.
+The full version has five.
+
+***
 
 Here is a (possibly wrong) high level description of the steps involved in evaluating the model.
 You will need to refer to the source in `smolrwkv/src/simple/model.rs` for this to make sense.
@@ -107,9 +122,9 @@ matters is the matrix multiplication (`pardot` in the source). In the case of RW
 multiplication (a 2D array multiplied with a 1D array). >90% of the time spent evaluating the model
 is in those matrix multiplication calls.
 
-The math/array handling here uses the `ndarray` crate. It provides a `.dot` function, however this
-will _never_ actually calculate a matrix-vector multiplication in parallel even though the crate
-claims threading support. Because this calculation is so critical for performance, I ended up writing
+In non-GGML mode, the math/array handling here uses the `ndarray` crate. It provides a `.dot` function,
+however this will _never_ actually calculate a matrix-vector multiplication in parallel even though the
+crate claims threading support. Because this calculation is so critical for performance, I ended up writing
 my own function to split the calculation into chunks and run it in parallel. See the functions in the
 `dumdot` module in `smolrwkv/src/util.rs`.
 

@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 
 /// Used as the prompt.
 const DEFAULT_PROMPT: &str = "\nIn a shocking finding, scientists discovered a herd of dragons living in a remote, previously unexplored valley, in Tibet. Even more surprising to the researchers was the fact that the dragons spoke perfect Chinese.";
@@ -8,6 +8,33 @@ const DEFAULT_MODEL: &str = "./RWKV-4-Pile-430M-20220808-8066.safetensors";
 
 /// Tokenizer definition file. See README.
 const DEFAULT_TOKENIZER: &str = "./20B_tokenizer.json";
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum EvalType {
+    #[value(name = "ndf32")]
+    /// ndarray-backed 32 bit floats. Uses a lot of memory.
+    NDf32,
+
+    #[value(name = "ndq8")]
+    /// ndarray-backed 8 bit quantized. Better memory usage but quite slow.
+    NDu8,
+
+    #[cfg(feature = "ggml")]
+    #[value(name = "ggmlf32")]
+    /// GGML-backed 32 bit. As above, uses a lot of memory.
+    GGMLf32,
+
+    #[cfg(feature = "ggml")]
+    #[value(name = "ggmlq4_0")]
+    /// GGML-backed 4 bit quantized, method 1. Poor quality.
+    GGMLQ4_0,
+
+    #[cfg(feature = "ggml")]
+    #[value(name = "ggmlq4_1")]
+    /// GGML-backed 4 bit quantized, method 2. Decenent quality,
+    /// but slower (to load?)
+    GGMLQ4_1,
+}
 
 #[derive(Clone, Debug, Parser)]
 /// Simple commandline interface to RWKV
@@ -20,6 +47,10 @@ pub struct Args {
     /// Tokenizer filename
     #[arg(short = 't', long, default_value = DEFAULT_TOKENIZER)]
     pub tokenizer: String,
+
+    /// Evaluation mode
+    #[arg(short = 'e',  long, value_enum, default_value_t = EvalType::NDu8)]
+    pub eval_mode: EvalType,
 
     /// The higher the temperature, the more random the results.
     #[arg(long, default_value_t = 1.0)]
@@ -49,11 +80,6 @@ pub struct Args {
     /// Number of threads to use when evaluating the model. 0 means one per logical core.
     #[arg(long, default_value_t = 0)]
     pub max_eval_threads: usize,
-
-    /// When enabled will run in full 32bit float mode. This uses a lot of memory but runs about
-    /// twice as fast as quantized mode. By default the CLI will run in 8bit quantized mode.
-    #[arg(short = 'Q', long)]
-    pub no_quantized: bool,
 
     /// Seed for random numbers. If unset will generate different results each time.
     #[arg(long, default_value = None)]

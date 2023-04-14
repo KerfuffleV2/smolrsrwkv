@@ -6,8 +6,10 @@ edition = "2021"
 resolver = "2"
 
 [features]
-default = ["torch"]
+default = ["torch", "ggml"]
 torch = ["dep:repugnant-pickle"]
+simd = ["dep:simba"]
+ggml = ["dep:ggml", "dep:ggml-sys"]
 
 [dependencies]
 safetensors = { version = "0.3", default-features = false }
@@ -20,9 +22,20 @@ half = "2.2"
 rand = "0.8"
 num-traits = "0.2"
 tracing = "0.1"
+simba = { version = "0.8", features = ["wide"], optional = true }
 
 [dependencies.repugnant-pickle]
 git = "https://github.com/kerfufflev2/repugnant-pickle"
 tag = "v0.0.1"
 features = ["torch"]
 optional = true
+
+[dependencies.ggml]
+optional = true
+git = "https://github.com/kerfufflev2/llama-rs"
+branch = "experiment-ggml-map-ops"
+
+[dependencies.ggml-sys]
+optional = true
+git = "https://github.com/kerfufflev2/llama-rs"
+branch = "experiment-ggml-map-ops"

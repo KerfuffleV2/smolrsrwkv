@@ -8,7 +8,7 @@ use tracing::info;
 use smolrwkv::{
     loader::TensorDataMap,
     quantized::model::TensorQ2,
-    simple as S,
+    simple::{self as S},
     util::{mmap_file, run_threadlimited, sample_probs},
 };
 
@@ -24,6 +24,7 @@ pub fn setup_logging() {
 
     let fmt_layer = fmt::layer()
         .compact()
+        // .with_span_events(FmtSpan::FULL)
         .with_timer(tracing_subscriber::fmt::time::uptime())
         .with_filter(
             tracing_subscriber::EnvFilter::builder()
@@ -54,23 +55,49 @@ fn go() -> Result<()> {
     let mm = mmap_file(modelfn)?;
     let tdm: TensorDataMap<'_> = (modelfn.clone(), mm.as_slice()).try_into()?;
 
-    let mut context = run_threadlimited(args.max_load_threads, move || {
-        anyhow::Ok(if args.no_quantized {
-            info!("Model type: non-quantized (full 32bit).");
-            Ctx::FloatCtx(
-                S::context::RWKVContext::<FloatType, Array2<FloatType>>::new(
-                    tdm.try_into()?,
-                    tokenizer,
-                ),
-            )
-        } else {
-            info!("Model type: 8 bit-quantized weights.");
-            Ctx::QuantCtx(S::context::RWKVContext::<FloatType, TensorQ2>::new(
-                tdm.try_into()?,
+    let context = match &args.eval_mode {
+        args::EvalType::NDf32 => {
+            Ctx::NdFloat32(run_threadlimited(args.max_load_threads, move || {
+                anyhow::Ok({
+                    info!("Backend type: NDArray non-quantized (full 32bit).");
+                    S::context::RWKVContext::<FloatType, Array2<FloatType>>::new(
+                        tdm.try_into()?,
+                        tokenizer,
+                    )
+                })
+            })?)
+        }
+
+        args::EvalType::NDu8 => {
+            Ctx::NdQuant8(run_threadlimited(args.max_load_threads, move || {
+                anyhow::Ok({
+                    info!("Backend type: NDArray 8 bit-quantized weights.");
+                    S::context::RWKVContext::<FloatType, TensorQ2>::new(tdm.try_into()?, tokenizer)
+                })
+            })?)
+        }
+        #[cfg(feature = "ggml")]
+        args::EvalType::GGMLf32 | args::EvalType::GGMLQ4_0 | args::EvalType::GGMLQ4_1 => {
+            use smolrwkv::ggml::{context::RWKVContext, loader::RwkvGgmlType};
+            let wtype = match args.eval_mode {
+                args::EvalType::GGMLf32 => RwkvGgmlType::Float32,
+                args::EvalType::GGMLQ4_0 => RwkvGgmlType::Q4_0,
+                args::EvalType::GGMLQ4_1 => RwkvGgmlType::Q4_1,
+                _ => panic!("Impossible: Bad eval mode!"),
+            };
+            info!("Backend type: GGML {wtype:?}");
+            Ctx::Ggml(RWKVContext::new(
+                (wtype, tdm).try_into()?,
                 tokenizer,
+                args.max_eval_threads,
             ))
-        })
-    })?;
+        }
+    };
+
+    let (n_layers, n_embed, n_vocab) = context.params();
+    info!("Loaded: layers={n_layers}, embed={n_embed}, vocab={n_vocab}",);
+
+    let max_tokens = args.max_tokens.unwrap_or(usize::MAX);
 
     let mut do_sample = |probs: &ArrayView1<FloatType>| {
         Ok(sample_probs(
@@ -81,28 +108,69 @@ fn go() -> Result<()> {
             args.top_p,
         ))
     };
+    // FIXME: Duplicated code.
+    // The solution isn't as simple as it may appear because the GGML types aren't Sync
+    // which means thread limiting requires special handling.
+    let (tcount, elapsed) = match context {
+        Ctx::NdFloat32(mut context) => run_threadlimited(args.max_eval_threads, || {
+            use std::time::Instant;
 
-    let (n_layers, n_embed, n_vocab) = context.params();
-    info!("Loaded: layers={n_layers}, embed={n_embed}, vocab={n_vocab}",);
+            context.feed_prompt(args.prompt, Some(show_token))?;
 
-    let max_tokens = args.max_tokens.unwrap_or(usize::MAX);
-    let (tcount, elapsed) = run_threadlimited(args.max_eval_threads, || {
-        use std::time::Instant;
-
-        context.feed_prompt(&args.prompt, Some(show_token))?;
-
-        let mut tcount = 0;
-        let stime = Instant::now();
-        while let Some(token) = context.infer_next_token(&mut do_sample)? {
-            show_token(token);
-            tcount += 1;
-            if tcount > max_tokens {
-                break;
+            let mut tcount = 0;
+            let stime = Instant::now();
+            while let Some(token) = context.infer_next_token(&mut do_sample)? {
+                show_token(token);
+                tcount += 1;
+                if tcount > max_tokens {
+                    break;
+                }
             }
+            let etime = Instant::now();
+            Ok((tcount, etime - stime))
+        }),
+        Ctx::NdQuant8(mut context) => run_threadlimited(args.max_eval_threads, || {
+            use std::time::Instant;
+
+            context.feed_prompt(args.prompt, Some(show_token))?;
+
+            let mut tcount = 0;
+            let stime = Instant::now();
+            while let Some(token) = context.infer_next_token(&mut do_sample)? {
+                show_token(token);
+                tcount += 1;
+                if tcount > max_tokens {
+                    break;
+                }
+            }
+            let etime = Instant::now();
+            Ok((tcount, etime - stime))
+        }),
+        #[cfg(feature = "ggml")]
+        Ctx::Ggml(mut context) => {
+            use std::time::Instant;
+
+            context.feed_prompt(args.prompt, Some(show_token))?;
+
+            let mut tcount = 0;
+            let stime = Instant::now();
+            while let Some(token) = context.infer_next_token(&mut do_sample)? {
+                show_token(token);
+                tcount += 1;
+                if tcount > max_tokens {
+                    break;
+                }
+            }
+            let etime = Instant::now();
+            let used_mem = context.rwkv.ctx.used_mem();
+            println!();
+            info!(
+                "GGML memory used: {:.3}GiB",
+                (used_mem as f64) / (1024.0f64 * 1024.0 * 1024.0)
+            );
+            Ok((tcount, etime - stime))
         }
-        let etime = Instant::now();
-        Ok((tcount, etime - stime))
-    })?;
+    }?;
 
     println!(" [end of text]\n");
     let tps = tcount as f64 / (elapsed.as_millis() as f64 / 1000.0);
