@@ -12,7 +12,7 @@ use ggml::{Context, Tensor, Type as GT};
 use super::model::*;
 use crate::{
     loader::{TensorData, TensorDataMap},
-    util::{bf16_tensor_to_f32_buf, bf16_tensor_to_f32_slice, ConvertBF16Tensor},
+    util::{bf16_tensor_to_f32_buf, ConvertBF16Tensor},
 };
 
 type ATy = f32;
@@ -70,10 +70,8 @@ fn quantize(bctx: &mut BuildCtx<'_, '_>, td: &TensorData<'_>) -> Tensor {
     // FIXME: Verify this is safe, but 32bit -> 4bit shouldn't take more than 8bits per element
     // plus maybe an extra block. Riiight?
     bctx.qbuf.clear();
-    // println!("Pre: Capacity: {}", bctx.qbuf.capacity());
     bctx.qbuf
         .reserve((in_size / 4) + ggml::blck_size(wtype.into()));
-    // println!("Post: Capacity: {}", bctx.qbuf.capacity());
 
     let mut hist = [0i64; 16];
     // output.fill(0);
@@ -103,7 +101,6 @@ fn quantize(bctx: &mut BuildCtx<'_, '_>, td: &TensorData<'_>) -> Tensor {
     );
     let t = bctx.ctx.new_tensor_2d(wtype.into(), shp[1], shp[0]);
     unsafe { (t.data() as *mut u8).copy_from_nonoverlapping(bctx.qbuf.as_ptr(), out_size) }
-    // let t = bctx.ctx.new_tensor_2d(wtype.into(), 1, 1);
     t
 }
 
@@ -119,12 +116,6 @@ fn gk1(bctx: &mut BuildCtx<'_, '_>, key: &str) -> Result<Tensor> {
         .filter(|i| *i != 1)
         .collect::<Vec<_>>();
     let t = bctx.ctx.new_tensor_1d(GT32, shp[0]);
-    // unsafe {
-    //     bf16_tensor_to_f32_slice(
-    //         td,
-    //         std::slice::from_raw_parts_mut(t.data() as *mut f32, shp[0]),
-    //     )
-    // };
     bf16_tensor_to_f32_buf(td, &mut bctx.buf);
     unsafe { (t.data() as *mut f32).copy_from_nonoverlapping(bctx.buf.as_ptr(), bctx.buf.len()) }
     Ok(t)
@@ -137,12 +128,6 @@ fn gk2(bctx: &mut BuildCtx<'_, '_>, key: &str) -> Result<Tensor> {
     bf16_tensor_to_f32_buf(td, &mut bctx.buf);
     let shp = &td.shape;
     let t = bctx.ctx.new_tensor_2d(GT32, shp[1], shp[0]);
-    // unsafe {
-    //     bf16_tensor_to_f32_slice(
-    //         td,
-    //         std::slice::from_raw_parts_mut(t.data() as *mut f32, shp[0] * shp[1]),
-    //     )
-    // };
     unsafe { (t.data() as *mut f32).copy_from_nonoverlapping(bctx.buf.as_ptr(), bctx.buf.len()) }
     Ok(t)
 }
@@ -202,15 +187,6 @@ impl TryFrom<&mut BuildCtx<'_, '_>> for AttTime {
 
     #[instrument(skip_all, err, name = "convert_attn_time_mix", level = "DEBUG")]
     fn try_from(bctx: &mut BuildCtx<'_, '_>) -> Result<Self> {
-        // let decay = gk1(bctx, "att.time_decay")?;
-        // unsafe {
-        //     let s = std::slice::from_raw_parts_mut(
-        //         decay.data() as *mut f32,
-        //         decay.get_ne()[0] as usize,
-        //     );
-        //     s.iter_mut().for_each(|i| *i = -(*i).exp());
-        // }
-
         let (ctx, lm) = (bctx.ctx, &bctx.lm);
         let mut decay = <ATy as ConvertBF16Tensor<Array1<ATy>>>::convert_tensor(
             lm.get("att.time_decay")
