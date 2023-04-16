@@ -1,9 +1,12 @@
 use std::{
-    collections::HashMap,
+    borrow::Cow,
+    collections::{HashMap, VecDeque},
     io::{stdout, Write},
+    sync::{mpsc, Arc, Mutex},
+    thread,
 };
 
-use anyhow::{anyhow, Error, Ok as AOk, Result};
+use anyhow::{anyhow, bail, Error, Ok as AOk, Result};
 use ndarray::{Array1, Array2};
 use tracing::{info, instrument};
 
@@ -48,11 +51,292 @@ struct BuildCtx<'a, 'b> {
 }
 
 #[repr(transparent)]
-struct Tents(Tensor);
+pub struct Tents(Tensor);
 
 impl From<Tensor> for Tents {
     fn from(value: Tensor) -> Self {
         Self(value)
+    }
+}
+
+pub struct RWKVLoader<'a> {
+    pub(crate) atype: RwkvGgmlType,
+    pub(crate) wtype: RwkvGgmlType,
+    _marker: std::marker::PhantomData<&'a ()>,
+}
+
+#[allow(clippy::new_without_default)]
+impl<'a> RWKVLoader<'a> {
+    const WTENSORS: &'static [&'static str] = &[
+        "att.key.weight",
+        "att.value.weight",
+        "att.output.weight",
+        "att.receptance.weight",
+        "ffn.key.weight",
+        "ffn.value.weight",
+        "ffn.receptance.weight",
+    ];
+    const DECAY: &'static str = "att.time_decay";
+
+    pub fn new() -> Self {
+        Self {
+            atype: RwkvGgmlType::Float32,
+            wtype: RwkvGgmlType::Q4_1,
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
+pub enum RWKVLoadedTensorData<'a> {
+    Float32(Cow<'a, Vec<f32>>),
+    U8(Cow<'a, Vec<u8>>),
+}
+pub struct RWKVLoadedTensor<'a> {
+    layer: Option<u32>,
+    name: String,
+    shape: [usize; 2],
+    typ: RwkvGgmlType,
+    data: RWKVLoadedTensorData<'a>,
+}
+
+pub trait Loader: Send + Sync + Sized {
+    type Context: Send;
+    type ItemDefinition: Send;
+    type LoadedItem: Send;
+
+    fn load(
+        &self,
+        context: &mut Self::Context,
+        load_threads: usize,
+        mut input_items: impl Iterator<Item = Self::ItemDefinition> + Send,
+    ) -> Result<()> {
+        thread::scope(move |sc| {
+            // There's probably a better way but the idea behind this song and dance
+            // is to avoid sending the items or definitions across a channel which can
+            // be really complicated since it may have a non-'static lifetime. For example
+            // it could be references into the mmaped model data.
+            let (wo_tx, wo_rx) = mpsc::channel::<()>();
+            let (wi_txs, wi_rxs) = {
+                let mut wi_txs = Vec::with_capacity(load_threads);
+                let mut wi_rxs = Vec::with_capacity(load_threads);
+                (0..load_threads).for_each(|_| {
+                    let (tx, rx) = mpsc::sync_channel::<()>(1);
+                    wi_txs.push(tx);
+                    wi_rxs.push(rx)
+                });
+                (wi_txs, wi_rxs)
+            };
+            let work_in: Arc<Mutex<VecDeque<Self::ItemDefinition>>> =
+                Arc::new(Mutex::new(VecDeque::new()));
+            let work_out: Arc<Mutex<VecDeque<Result<Self::LoadedItem>>>> =
+                Arc::new(Mutex::new(VecDeque::new()));
+
+            println!("Create loader");
+            let loader_thread = sc.spawn({
+                let (work_in, work_out) = (work_in.clone(), work_out.clone());
+                move || {
+                    let (mut pending, mut have_items) = (0, true);
+                    let mut last_worker_idx = 0;
+
+                    // While the iterator has item or there are pending expensive items being computed:
+                    'handle_items: while have_items || pending > 0 {
+                        println!("Loop: have_items={have_items}, pending={pending}");
+                        if pending >= load_threads || !have_items {
+                            // The iterator is either empty and there are items pending or
+                            // the work queue is already full.
+
+                            wo_rx.recv()?;
+                            let litem = work_out
+                                .lock()
+                                .map_err(|e| anyhow!("Work out mutex failure: {e:?}"))?
+                                .pop_front()
+                                .ok_or_else(|| anyhow!("Unexpected empty output work queue!"))??;
+                            pending -= 1;
+                            self.loaded_item(context, litem)?;
+                            continue;
+                        }
+                        let itemdef = if let Some(i) = input_items.next() {
+                            i
+                        } else {
+                            have_items = false;
+                            continue;
+                        };
+                        if load_threads < 2 || !self.is_expensive(&itemdef) {
+                            // Cheap item, just process inline.
+                            println!("Not expensive");
+                            let litem = self.load_item(itemdef)?;
+                            self.loaded_item(context, litem)?;
+                            continue;
+                        }
+                        // At this point we have an expensive item we need to add to the work
+                        // queue.
+                        work_in
+                            .lock()
+                            .map_err(|e| anyhow!("Work in mutex failure: {e:?}"))?
+                            .push_back(itemdef);
+
+                        for worker_idx in
+                            (last_worker_idx + 1..load_threads).chain(0..=last_worker_idx)
+                        {
+                            println!("Trying worker {worker_idx} (last {last_worker_idx}");
+                            match wi_txs[worker_idx].try_send(()) {
+                                Ok(_) => {
+                                    last_worker_idx = worker_idx;
+                                    pending += 1;
+                                    continue 'handle_items;
+                                }
+                                Err(e) => match e {
+                                    mpsc::TrySendError::Full(_) => continue,
+                                    mpsc::TrySendError::Disconnected(_) => {
+                                        bail!("Worker {worker_idx} unexpected disconnected!")
+                                    }
+                                },
+                            }
+                        }
+                        bail!("Unexpectedly there are no ready workers!");
+                    }
+                    anyhow::Ok(())
+                }
+            });
+            println!("Create workers");
+            let mut worker_threads = Vec::with_capacity(load_threads);
+            // This actually can't be something like .for_each because the
+            // closure counts as a "scope" apparently, which means the first
+            // thread will be created and then the scope will wait for it to exit.
+            for (tnum, wi_rx) in (0..load_threads).zip(wi_rxs.into_iter()) {
+                worker_threads.push({
+                    let (work_in, work_out) = (work_in.clone(), work_out.clone());
+                    let wo_tx = wo_tx.clone();
+
+                    sc.spawn({
+                        move || {
+                            let result = (|| {
+                                // println!(">> Thread {tnum} start.");
+                                while wi_rx.recv().is_ok() {
+                                    // println!("Thread {tnum} got token");
+                                    let itemdef = work_in
+                                        .lock()
+                                        .map_err(|e| {
+                                            anyhow!("Worker {tnum} work in mutex failure: {e:?}")
+                                        })?
+                                        .pop_front()
+                                        .ok_or_else(|| {
+                                            anyhow!("Unexpected empty input work queue!")
+                                        })?;
+                                    println!("\tWorker {tnum} working.");
+                                    let maybelitem = self.load_item(itemdef);
+                                    work_out
+                                        .lock()
+                                        .map_err(|e| {
+                                            anyhow!("Worker {tnum} work out mutex failure: {e:?}")
+                                        })?
+                                        .push_back(maybelitem);
+                                    wo_tx.send(())?;
+                                }
+                                println!("<< Thread {tnum} done.");
+                                anyhow::Ok(())
+                            })();
+                            println!("\tThread {tnum} result: {result:?}");
+                            result
+                        }
+                    })
+                });
+            }
+
+            for wt in worker_threads.into_iter() {
+                match wt.join() {
+                    Ok(r) => r?,
+                    Err(e) => std::panic::resume_unwind(e),
+                }
+            }
+            match loader_thread.join() {
+                Ok(r) => r?,
+                Err(e) => std::panic::resume_unwind(e),
+            }
+            anyhow::Ok(())
+        })?;
+
+        Ok(())
+    }
+    fn is_expensive(&self, itemdef: &Self::ItemDefinition) -> bool;
+    fn load_item(&self, itemdef: Self::ItemDefinition) -> Result<Self::LoadedItem>;
+    fn loaded_item(&self, context: &mut Self::Context, item: Self::LoadedItem) -> Result<()>;
+}
+
+impl<'a> Loader for RWKVLoader<'a> {
+    type Context = Vec<RWKVLoadedTensor<'a>>;
+    type ItemDefinition = (String, TensorData<'a>, Vec<f32>);
+    type LoadedItem = RWKVLoadedTensor<'a>;
+
+    fn is_expensive(&self, itemdef: &Self::ItemDefinition) -> bool {
+        true
+    }
+
+    fn load_item(&self, (name, td, buf): Self::ItemDefinition) -> Result<Self::LoadedItem> {
+        use crate::loader::TensorType;
+        println!("load_item: {name}");
+
+        assert_eq!(
+            td.dtype,
+            TensorType::BFloat16,
+            "Bad input type, must be BF16!"
+        );
+        let shape = td
+            .shape
+            .iter()
+            .copied()
+            .filter(|i| *i != 1)
+            .collect::<Vec<_>>();
+        let shape = match shape.len() {
+            1 => [shape[0], 1],
+            2 => [shape[0], td.shape[1]],
+            _ => bail!("Expected 1 or 2d tensor!"),
+        };
+        let (layer, name) = {
+            if let Some(rest) = name.strip_prefix("blocks.") {
+                let result = rest
+                    .split_once('.')
+                    .ok_or_else(|| anyhow!("Bad tensor name format"))?;
+                let lnum: u32 = result.0.parse()?;
+                (Some(lnum), result.1.to_owned())
+            } else {
+                (None, name.to_owned())
+            }
+        };
+        let out_type = if Self::WTENSORS.contains(&name.as_str()) {
+            self.wtype
+        } else {
+            self.atype
+        };
+
+        match (&td.dtype, out_type) {
+            (TensorType::BFloat16, RwkvGgmlType::Q4_0 | RwkvGgmlType::Q4_1) => {
+                println!("QUANT: {name}");
+                Ok(RWKVLoadedTensor {
+                    layer,
+                    name,
+                    typ: out_type,
+                    data: RWKVLoadedTensorData::U8(Cow::Owned(quantize_simple(&td, out_type, buf))),
+                    shape,
+                })
+            }
+            (TensorType::BFloat16, RwkvGgmlType::Float32) => {
+                let data = RWKVLoadedTensorData::Float32(Cow::Owned(buf));
+                Ok(RWKVLoadedTensor {
+                    layer,
+                    name,
+                    data,
+                    typ: out_type,
+                    shape,
+                })
+            }
+        }
+    }
+
+    fn loaded_item(&self, context: &mut Self::Context, item: Self::LoadedItem) -> Result<()> {
+        println!("Loaded {}", item.name);
+        context.push(item);
+        Ok(())
     }
 }
 
@@ -99,6 +383,47 @@ fn quantize(bctx: &mut BuildCtx<'_, '_>, td: &TensorData<'_>) -> Tensor {
     t
 }
 
+fn quantize_simple(td: &TensorData<'_>, wtype: RwkvGgmlType, buf: Vec<f32>) -> Vec<u8> {
+    assert_eq!(
+        td.dtype,
+        crate::loader::TensorType::BFloat16,
+        "Bad input type, must be BF16!"
+    );
+    let nels = td.data.len() / 2;
+    let shp = &td.shape;
+    let in_size = nels * 4;
+
+    // let mut buf: Vec<f32> = Vec::with_capacity(nels);
+    // bf16_tensor_to_f32_buf(td, &mut buf);
+
+    // FIXME: Verify this is safe, but 32bit -> 4bit shouldn't take more than 8bits per element
+    // plus maybe an extra block. Riiight?
+    let mut qbuf = Vec::with_capacity((in_size / 4) + ggml::blck_size(wtype.into()));
+
+    let mut hist = [0i64; 16];
+    let out_size = unsafe {
+        match wtype {
+            RwkvGgmlType::Q4_0 => ggml_sys::ggml_quantize_q4_0(
+                buf.as_ptr(),
+                qbuf.as_mut_ptr() as *mut std::ffi::c_void,
+                nels as i32,
+                shp[1] as i32,
+                hist.as_mut_ptr(),
+            ),
+            RwkvGgmlType::Q4_1 => ggml_sys::ggml_quantize_q4_1(
+                buf.as_ptr(),
+                qbuf.as_mut_ptr() as *mut std::ffi::c_void,
+                nels as i32,
+                shp[1] as i32,
+                hist.as_mut_ptr(),
+            ),
+            _ => panic!("Bad weight type!"),
+        }
+    };
+    unsafe { qbuf.set_len(out_size) };
+    qbuf
+}
+
 /// Helper function for extracting a 1d tensor from the HashMap by string key.
 /// Takes a closure to convert from the TensorData struct to a usable format.
 fn gk1(bctx: &mut BuildCtx<'_, '_>, key: &str) -> Result<Tensor> {
@@ -125,7 +450,6 @@ fn gk2(bctx: &mut BuildCtx<'_, '_>, key: &str) -> Result<Tensor> {
         .lm
         .remove(key)
         .map_or_else(|| Err(anyhow!("Missing tensor: {key}")), Ok)?;
-    // let td = bctx.lm.get(key).ok_or_else(|| anyhow!("Bad format"))?;
     bf16_tensor_to_f32_buf(&td, &mut bctx.buf);
     let shp = &td.shape;
     let t = bctx.ctx.new_tensor_2d(GT32, shp[1], shp[0]);

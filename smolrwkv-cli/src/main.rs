@@ -97,6 +97,23 @@ fn go() -> Result<()> {
                 _ => panic!("Impossible: Bad eval mode!"),
             };
             info!("Backend type: GGML {wtype:?}");
+            {
+                use smolrwkv::ggml::loader::Loader;
+                // The point here is to try to load the data from the mmap model
+                // sequentially.
+                let mut tdi = tdm.into_iter().collect::<Vec<_>>();
+                tdi.sort_unstable_by_key(|i| i.1.data.as_ptr() as usize);
+                let itemdefs = tdi.into_iter().map(|(name, td)| {
+                    let mut buf = Vec::new();
+                    smolrwkv::util::bf16_tensor_to_f32_buf(&td, &mut buf);
+                    println!("CVT: {name}: {:?}", td.data.as_ptr());
+                    (name, td.clone(), buf)
+                });
+                let loader = smolrwkv::ggml::loader::RWKVLoader::new();
+                let mut loaded = Vec::new();
+                loader.load(&mut loaded, 6, itemdefs)?;
+                panic!("ahhh");
+            }
             Ctx::Ggml(RWKVContext::new(
                 (wtype, tdm).try_into()?,
                 tokenizer,
