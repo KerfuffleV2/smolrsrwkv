@@ -2,6 +2,7 @@ use std::{
     borrow::Cow,
     collections::{HashMap, VecDeque},
     io::{stdout, Write},
+    ops::DerefMut,
     sync::{mpsc, Arc, Mutex},
     thread,
 };
@@ -98,6 +99,73 @@ pub struct RWKVLoadedTensor<'a> {
     typ: RwkvGgmlType,
     data: RWKVLoadedTensorData<'a>,
 }
+
+enum LoaderItem<ID, LI> {
+    Handled(LI),
+    Par(ID),
+}
+
+pub trait Loader2: Send + Sync + Sized {
+    type Context: Send;
+    type ItemDefinition: Send;
+    type LoadedItem: Send;
+
+    fn load2(
+        &self,
+        context: &mut Self::Context,
+        max_threads: usize,
+        input_items: impl Iterator<Item = Self::ItemDefinition> + Send,
+    ) -> Result<()> {
+        use rayon::iter::{ParallelBridge, ParallelIterator};
+        let context = Arc::new(Mutex::new(context));
+        crate::util::run_threadlimited(max_threads, || {
+            input_items
+                .map(|itemdef| {
+                    if self.is_expensive(&itemdef) {
+                        anyhow::Ok(LoaderItem::Par(itemdef))
+                    } else {
+                        anyhow::Ok(LoaderItem::Handled(self.load_item(itemdef)?))
+                    }
+                })
+                .par_bridge()
+                .try_for_each(|i| {
+                    let item = match i? {
+                        LoaderItem::Handled(x) => x,
+                        LoaderItem::Par(id) => self.load_item(id)?,
+                    };
+                    self.loaded_item(
+                        context
+                            .lock()
+                            .map_err(|e| anyhow!("Context mutex failure: {e:?}"))?
+                            .deref_mut(),
+                        item,
+                    )?;
+                    anyhow::Ok(())
+                })
+        })
+    }
+    fn is_expensive(&self, itemdef: &Self::ItemDefinition) -> bool;
+    fn load_item(&self, itemdef: Self::ItemDefinition) -> Result<Self::LoadedItem>;
+    fn loaded_item(&self, context: &mut Self::Context, item: Self::LoadedItem) -> Result<()>;
+}
+
+// impl<'a> Loader2 for RWKVLoader<'a> {
+//     type Context = Vec<RWKVLoadedTensor<'a>>;
+//     type ItemDefinition = (String, TensorData<'a>, Vec<f32>);
+//     type LoadedItem = RWKVLoadedTensor<'a>;
+
+//     fn is_expensive(&self, itemdef: &Self::ItemDefinition) -> bool {
+//         true
+//     }
+
+//     fn load_item(&self, (name, td, buf): Self::ItemDefinition) -> Result<Self::LoadedItem> {
+//         todo!()
+//     }
+
+//     fn loaded_item(&self, context: &mut Self::Context, item: Self::LoadedItem) -> Result<()> {
+//         todo!()
+//     }
+// }
 
 pub trait Loader: Send + Sync + Sized {
     type Context: Send;
@@ -340,6 +408,84 @@ impl<'a> Loader for RWKVLoader<'a> {
     }
 }
 
+impl<'a> Loader2 for RWKVLoader<'a> {
+    type Context = Vec<RWKVLoadedTensor<'a>>;
+    type ItemDefinition = (String, TensorData<'a>, Vec<f32>);
+    type LoadedItem = RWKVLoadedTensor<'a>;
+
+    fn is_expensive(&self, itemdef: &Self::ItemDefinition) -> bool {
+        // itemdef.0 == Self::DECAY || Self::WTENSORS.contains(&itemdef.0.as_str())
+        true
+    }
+
+    fn load_item(&self, (name, td, buf): Self::ItemDefinition) -> Result<Self::LoadedItem> {
+        use crate::loader::TensorType;
+        println!("load_item: {name}");
+
+        assert_eq!(
+            td.dtype,
+            TensorType::BFloat16,
+            "Bad input type, must be BF16!"
+        );
+        let shape = td
+            .shape
+            .iter()
+            .copied()
+            .filter(|i| *i != 1)
+            .collect::<Vec<_>>();
+        let shape = match shape.len() {
+            1 => [shape[0], 1],
+            2 => [shape[0], td.shape[1]],
+            _ => bail!("Expected 1 or 2d tensor!"),
+        };
+        let (layer, name) = {
+            if let Some(rest) = name.strip_prefix("blocks.") {
+                let result = rest
+                    .split_once('.')
+                    .ok_or_else(|| anyhow!("Bad tensor name format"))?;
+                let lnum: u32 = result.0.parse()?;
+                (Some(lnum), result.1.to_owned())
+            } else {
+                (None, name.to_owned())
+            }
+        };
+        let out_type = if Self::WTENSORS.contains(&name.as_str()) {
+            self.wtype
+        } else {
+            self.atype
+        };
+
+        match (&td.dtype, out_type) {
+            (TensorType::BFloat16, RwkvGgmlType::Q4_0 | RwkvGgmlType::Q4_1) => {
+                println!("QUANT: {name}");
+                Ok(RWKVLoadedTensor {
+                    layer,
+                    name,
+                    typ: out_type,
+                    data: RWKVLoadedTensorData::U8(Cow::Owned(quantize_simple(&td, out_type, buf))),
+                    shape,
+                })
+            }
+            (TensorType::BFloat16, RwkvGgmlType::Float32) => {
+                let data = RWKVLoadedTensorData::Float32(Cow::Owned(buf));
+                Ok(RWKVLoadedTensor {
+                    layer,
+                    name,
+                    data,
+                    typ: out_type,
+                    shape,
+                })
+            }
+        }
+    }
+
+    fn loaded_item(&self, context: &mut Self::Context, item: Self::LoadedItem) -> Result<()> {
+        println!("Loaded {}", item.name);
+        context.push(item);
+        Ok(())
+    }
+}
+
 fn quantize(bctx: &mut BuildCtx<'_, '_>, td: &TensorData<'_>) -> Tensor {
     let wtype = bctx.wtype;
 
@@ -389,16 +535,18 @@ fn quantize_simple(td: &TensorData<'_>, wtype: RwkvGgmlType, buf: Vec<f32>) -> V
         crate::loader::TensorType::BFloat16,
         "Bad input type, must be BF16!"
     );
-    let nels = td.data.len() / 2;
+    let nels = buf.len();
     let shp = &td.shape;
-    let in_size = nels * 4;
-
-    // let mut buf: Vec<f32> = Vec::with_capacity(nels);
-    // bf16_tensor_to_f32_buf(td, &mut buf);
 
     // FIXME: Verify this is safe, but 32bit -> 4bit shouldn't take more than 8bits per element
     // plus maybe an extra block. Riiight?
-    let mut qbuf = Vec::with_capacity((in_size / 4) + ggml::blck_size(wtype.into()));
+    let mut qbuf = Vec::with_capacity(nels + ggml::blck_size(wtype.into()));
+    println!(
+        "###### {} {shp:?} - {}, {}",
+        td.name,
+        buf.len(),
+        qbuf.capacity()
+    );
 
     let mut hist = [0i64; 16];
     let out_size = unsafe {

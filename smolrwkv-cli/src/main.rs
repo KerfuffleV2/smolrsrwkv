@@ -64,7 +64,10 @@ fn go() -> Result<()> {
     let tokenizer = Tokenizer::from_file(tokenizerfn).map_err(|e| anyhow!(e))?;
     info!("Loading model from: {modelfn}");
     let mm = mmap_file(modelfn)?;
-    let tdm: TensorDataMap<'_> = (modelfn.clone(), mm.as_slice()).try_into()?;
+    mm.advise(memmap2::Advice::Random)?;
+    let tdm: TensorDataMap<'_> = (modelfn.clone(), &mm).try_into()?;
+    mm.advise(memmap2::Advice::Sequential)?;
+    mm.advise(memmap2::Advice::WillNeed)?;
 
     let context = match &args.eval_mode {
         args::EvalType::NDf32 => {
@@ -98,21 +101,35 @@ fn go() -> Result<()> {
             };
             info!("Backend type: GGML {wtype:?}");
             {
-                use smolrwkv::ggml::loader::Loader;
+                const EMPTY: &[u8] = &[];
+                use smolrwkv::ggml::loader::{Loader, Loader2};
                 // The point here is to try to load the data from the mmap model
                 // sequentially.
+
                 let mut tdi = tdm.into_iter().collect::<Vec<_>>();
                 tdi.sort_unstable_by_key(|i| i.1.data.as_ptr() as usize);
-                let itemdefs = tdi.into_iter().map(|(name, td)| {
+                let itemdefs = tdi.into_iter().map(|(name, mut td)| {
                     let mut buf = Vec::new();
                     smolrwkv::util::bf16_tensor_to_f32_buf(&td, &mut buf);
+                    // mm.advise_range(
+                    //     memmap2::Advice::DontNeed,
+                    //     td.data.as_ptr() as usize - mm.as_ptr() as usize,
+                    //     td.data.len(),
+                    // )
+                    // .ok();
+                    td.data = EMPTY;
+                    td.mmap = None;
                     println!("CVT: {name}: {:?}", td.data.as_ptr());
-                    (name, td.clone(), buf)
+                    (name, td, buf)
                 });
+                // for (name, td, buf) in itemdefs {
+                //     println!("{name}, {}", buf.len());
+                // }
                 let loader = smolrwkv::ggml::loader::RWKVLoader::new();
                 let mut loaded = Vec::new();
-                loader.load(&mut loaded, 6, itemdefs)?;
-                panic!("ahhh");
+                loader.load2(&mut loaded, 6, itemdefs)?;
+                println!("*** Loaded: {}", loaded.len());
+                return Ok(());
             }
             Ctx::Ggml(RWKVContext::new(
                 (wtype, tdm).try_into()?,

@@ -67,18 +67,15 @@ impl ConvertBF16Tensor<TensorQ2> for f32 {
 }
 
 /// Helper function for opening a file and mmaping it.
-pub fn mmap_file(s: &str) -> Result<mmap_rs::Mmap> {
+pub fn mmap_file(s: &str) -> Result<memmap2::Mmap> {
     let fp = std::fs::File::open(s)?;
-    let flen = fp.metadata()?.len();
-    unsafe {
-        MmapOptions::new(flen as usize)
-            .and_then(|mo| {
-                mo.with_file(fp, 0)
-                    .with_flags(MmapFlags::NO_CORE_DUMP)
-                    .map()
-            })
-            .map_err(|e| anyhow!(e))
-    }
+    let m = unsafe { memmap2::MmapOptions::new().map(&fp)? };
+    #[cfg(unix)]
+    m.advise(memmap2::Advice::DontDump)?;
+    // m.advise(memmap2::Advice::Sequential)?;
+    // m.advise(memmap2::Advice::WillNeed)?;
+
+    Ok(m)
 }
 
 /// Uses a pool to run a function with a limited number of threads.
