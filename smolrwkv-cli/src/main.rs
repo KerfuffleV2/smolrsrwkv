@@ -64,10 +64,14 @@ fn go() -> Result<()> {
     let tokenizer = Tokenizer::from_file(tokenizerfn).map_err(|e| anyhow!(e))?;
     info!("Loading model from: {modelfn}");
     let mm = mmap_file(modelfn)?;
+    #[cfg(unix)]
     mm.advise(memmap2::Advice::Random)?;
     let tdm: TensorDataMap<'_> = (modelfn.clone(), &mm).try_into()?;
-    mm.advise(memmap2::Advice::Sequential)?;
-    mm.advise(memmap2::Advice::WillNeed)?;
+    #[cfg(unix)]
+    {
+        mm.advise(memmap2::Advice::WillNeed)?;
+        mm.advise(memmap2::Advice::Sequential)?;
+    }
 
     let context = match &args.eval_mode {
         args::EvalType::NDf32 => {
@@ -92,7 +96,11 @@ fn go() -> Result<()> {
         }
         #[cfg(feature = "ggml")]
         args::EvalType::GGMLf32 | args::EvalType::GGMLQ4_0 | args::EvalType::GGMLQ4_1 => {
-            use smolrwkv::ggml::{context::RWKVContext, loader::RwkvGgmlType};
+            use smolrwkv::ggml::{
+                context::RWKVContext,
+                loader::{load_rwkv, RwkvGgmlType},
+            };
+
             let wtype = match args.eval_mode {
                 args::EvalType::GGMLf32 => RwkvGgmlType::Float32,
                 args::EvalType::GGMLQ4_0 => RwkvGgmlType::Q4_0,
@@ -100,39 +108,9 @@ fn go() -> Result<()> {
                 _ => panic!("Impossible: Bad eval mode!"),
             };
             info!("Backend type: GGML {wtype:?}");
-            {
-                const EMPTY: &[u8] = &[];
-                use smolrwkv::ggml::loader::{Loader, Loader2};
-                // The point here is to try to load the data from the mmap model
-                // sequentially.
-
-                let mut tdi = tdm.into_iter().collect::<Vec<_>>();
-                tdi.sort_unstable_by_key(|i| i.1.data.as_ptr() as usize);
-                let itemdefs = tdi.into_iter().map(|(name, mut td)| {
-                    let mut buf = Vec::new();
-                    smolrwkv::util::bf16_tensor_to_f32_buf(&td, &mut buf);
-                    // mm.advise_range(
-                    //     memmap2::Advice::DontNeed,
-                    //     td.data.as_ptr() as usize - mm.as_ptr() as usize,
-                    //     td.data.len(),
-                    // )
-                    // .ok();
-                    td.data = EMPTY;
-                    td.mmap = None;
-                    println!("CVT: {name}: {:?}", td.data.as_ptr());
-                    (name, td, buf)
-                });
-                // for (name, td, buf) in itemdefs {
-                //     println!("{name}, {}", buf.len());
-                // }
-                let loader = smolrwkv::ggml::loader::RWKVLoader::new();
-                let mut loaded = Vec::new();
-                loader.load2(&mut loaded, 6, itemdefs)?;
-                println!("*** Loaded: {}", loaded.len());
-                return Ok(());
-            }
+            let ltensors = load_rwkv(args.max_load_threads, RwkvGgmlType::Float32, wtype, tdm)?;
             Ctx::Ggml(RWKVContext::new(
-                (wtype, tdm).try_into()?,
+                (wtype, ltensors).try_into()?,
                 tokenizer,
                 args.max_eval_threads,
             ))

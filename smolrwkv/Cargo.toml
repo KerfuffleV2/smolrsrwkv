@@ -15,7 +15,6 @@ ggml = ["dep:ggml", "dep:ggml-sys"]
 safetensors = { version = "0.3", default-features = false }
 tokenizers = { version = "0.13", default-features = false, features = ["onig"] }
 anyhow = "1"
-mmap-rs = "0.5"
 memmap2 = "0.5"
 ndarray = { version = "0.15", features = ["rayon"] }
 rayon = "1.7"
@@ -34,10 +33,10 @@ optional = true
 
 [dependencies.ggml]
 optional = true
-git = "https://github.com/kerfufflev2/llama-rs"
-branch = "experiment-ggml-map-ops"
+git = "https://github.com/rustformers/llama-rs"
+rev = "84656bedce38a6be8070e13506cb6c6245e7ef75"
 
 [dependencies.ggml-sys]
 optional = true
-git = "https://github.com/kerfufflev2/llama-rs"
-branch = "experiment-ggml-map-ops"
+git = "https://github.com/rustformers/llama-rs"
+rev = "84656bedce38a6be8070e13506cb6c6245e7ef75"

@@ -3,7 +3,7 @@ use std::ops::{Add, Sub};
 
 use anyhow::{anyhow, ensure, Result};
 use half::slice::HalfFloatSliceExt;
-use mmap_rs::{MmapFlags, MmapOptions};
+use memmap2::{Mmap, MmapOptions};
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2, NdFloat, ScalarOperand, Zip};
 use num_traits::FromPrimitive;
 use tracing::instrument;
@@ -67,14 +67,11 @@ impl ConvertBF16Tensor<TensorQ2> for f32 {
 }
 
 /// Helper function for opening a file and mmaping it.
-pub fn mmap_file(s: &str) -> Result<memmap2::Mmap> {
+pub fn mmap_file(s: &str) -> Result<Mmap> {
     let fp = std::fs::File::open(s)?;
-    let m = unsafe { memmap2::MmapOptions::new().map(&fp)? };
+    let m = unsafe { MmapOptions::new().map(&fp)? };
     #[cfg(unix)]
     m.advise(memmap2::Advice::DontDump)?;
-    // m.advise(memmap2::Advice::Sequential)?;
-    // m.advise(memmap2::Advice::WillNeed)?;
-
     Ok(m)
 }
 

@@ -1,13 +1,10 @@
 use std::{
     borrow::Cow,
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     io::{stdout, Write},
-    ops::DerefMut,
-    sync::{mpsc, Arc, Mutex},
-    thread,
 };
 
-use anyhow::{anyhow, bail, Error, Ok as AOk, Result};
+use anyhow::{anyhow, bail, ensure, Error, Result};
 use ndarray::{Array1, Array2};
 use tracing::{info, instrument};
 
@@ -15,8 +12,8 @@ use ggml::{Context, Tensor, Type as GT};
 
 use super::model::*;
 use crate::{
-    loader::{TensorData, TensorDataMap},
-    util::{bf16_tensor_to_f32_buf, ConvertBF16Tensor},
+    loader::{GenericLoader, TensorDataMap},
+    util::bf16_tensor_to_f32_buf,
 };
 
 type ATy = f32;
@@ -42,27 +39,13 @@ impl Into<ggml::Type> for RwkvGgmlType {
 }
 
 struct BuildCtx<'a, 'b> {
-    n_layers: usize,
-    lnum: usize,
+    lnum: Option<usize>,
     ctx: &'a Context,
-    lm: HashMap<String, TensorData<'b>>,
-    wtype: RwkvGgmlType,
-    buf: Vec<ATy>,
-    qbuf: Vec<u8>,
+    lm: RWKVLoadMap<'b>,
 }
 
-#[repr(transparent)]
-pub struct Tents(Tensor);
-
-impl From<Tensor> for Tents {
-    fn from(value: Tensor) -> Self {
-        Self(value)
-    }
-}
-
+#[derive(Default)]
 pub struct RWKVLoader<'a> {
-    pub(crate) atype: RwkvGgmlType,
-    pub(crate) wtype: RwkvGgmlType,
     _marker: std::marker::PhantomData<&'a ()>,
 }
 
@@ -78,14 +61,6 @@ impl<'a> RWKVLoader<'a> {
         "ffn.receptance.weight",
     ];
     const DECAY: &'static str = "att.time_decay";
-
-    pub fn new() -> Self {
-        Self {
-            atype: RwkvGgmlType::Float32,
-            wtype: RwkvGgmlType::Q4_1,
-            _marker: std::marker::PhantomData,
-        }
-    }
 }
 
 pub enum RWKVLoadedTensorData<'a> {
@@ -100,454 +75,73 @@ pub struct RWKVLoadedTensor<'a> {
     data: RWKVLoadedTensorData<'a>,
 }
 
-enum LoaderItem<ID, LI> {
-    Handled(LI),
-    Par(ID),
-}
+type RWKVLoadMap<'a> = HashMap<(Option<u32>, String), RWKVLoadedTensor<'a>>;
 
-pub trait Loader2: Send + Sync + Sized {
-    type Context: Send;
-    type ItemDefinition: Send;
-    type LoadedItem: Send;
-
-    fn load2(
-        &self,
-        context: &mut Self::Context,
-        max_threads: usize,
-        input_items: impl Iterator<Item = Self::ItemDefinition> + Send,
-    ) -> Result<()> {
-        use rayon::iter::{ParallelBridge, ParallelIterator};
-        let context = Arc::new(Mutex::new(context));
-        crate::util::run_threadlimited(max_threads, || {
-            input_items
-                .map(|itemdef| {
-                    if self.is_expensive(&itemdef) {
-                        anyhow::Ok(LoaderItem::Par(itemdef))
-                    } else {
-                        anyhow::Ok(LoaderItem::Handled(self.load_item(itemdef)?))
-                    }
-                })
-                .par_bridge()
-                .try_for_each(|i| {
-                    let item = match i? {
-                        LoaderItem::Handled(x) => x,
-                        LoaderItem::Par(id) => self.load_item(id)?,
-                    };
-                    self.loaded_item(
-                        context
-                            .lock()
-                            .map_err(|e| anyhow!("Context mutex failure: {e:?}"))?
-                            .deref_mut(),
-                        item,
-                    )?;
-                    anyhow::Ok(())
-                })
-        })
-    }
-    fn is_expensive(&self, itemdef: &Self::ItemDefinition) -> bool;
-    fn load_item(&self, itemdef: Self::ItemDefinition) -> Result<Self::LoadedItem>;
-    fn loaded_item(&self, context: &mut Self::Context, item: Self::LoadedItem) -> Result<()>;
-}
-
-// impl<'a> Loader2 for RWKVLoader<'a> {
-//     type Context = Vec<RWKVLoadedTensor<'a>>;
-//     type ItemDefinition = (String, TensorData<'a>, Vec<f32>);
-//     type LoadedItem = RWKVLoadedTensor<'a>;
-
-//     fn is_expensive(&self, itemdef: &Self::ItemDefinition) -> bool {
-//         true
-//     }
-
-//     fn load_item(&self, (name, td, buf): Self::ItemDefinition) -> Result<Self::LoadedItem> {
-//         todo!()
-//     }
-
-//     fn loaded_item(&self, context: &mut Self::Context, item: Self::LoadedItem) -> Result<()> {
-//         todo!()
-//     }
-// }
-
-pub trait Loader: Send + Sync + Sized {
-    type Context: Send;
-    type ItemDefinition: Send;
-    type LoadedItem: Send;
-
-    fn load(
-        &self,
-        context: &mut Self::Context,
-        load_threads: usize,
-        mut input_items: impl Iterator<Item = Self::ItemDefinition> + Send,
-    ) -> Result<()> {
-        thread::scope(move |sc| {
-            // There's probably a better way but the idea behind this song and dance
-            // is to avoid sending the items or definitions across a channel which can
-            // be really complicated since it may have a non-'static lifetime. For example
-            // it could be references into the mmaped model data.
-            let (wo_tx, wo_rx) = mpsc::channel::<()>();
-            let (wi_txs, wi_rxs) = {
-                let mut wi_txs = Vec::with_capacity(load_threads);
-                let mut wi_rxs = Vec::with_capacity(load_threads);
-                (0..load_threads).for_each(|_| {
-                    let (tx, rx) = mpsc::sync_channel::<()>(1);
-                    wi_txs.push(tx);
-                    wi_rxs.push(rx)
-                });
-                (wi_txs, wi_rxs)
-            };
-            let work_in: Arc<Mutex<VecDeque<Self::ItemDefinition>>> =
-                Arc::new(Mutex::new(VecDeque::new()));
-            let work_out: Arc<Mutex<VecDeque<Result<Self::LoadedItem>>>> =
-                Arc::new(Mutex::new(VecDeque::new()));
-
-            println!("Create loader");
-            let loader_thread = sc.spawn({
-                let (work_in, work_out) = (work_in.clone(), work_out.clone());
-                move || {
-                    let (mut pending, mut have_items) = (0, true);
-                    let mut last_worker_idx = 0;
-
-                    // While the iterator has item or there are pending expensive items being computed:
-                    'handle_items: while have_items || pending > 0 {
-                        println!("Loop: have_items={have_items}, pending={pending}");
-                        if pending >= load_threads || !have_items {
-                            // The iterator is either empty and there are items pending or
-                            // the work queue is already full.
-
-                            wo_rx.recv()?;
-                            let litem = work_out
-                                .lock()
-                                .map_err(|e| anyhow!("Work out mutex failure: {e:?}"))?
-                                .pop_front()
-                                .ok_or_else(|| anyhow!("Unexpected empty output work queue!"))??;
-                            pending -= 1;
-                            self.loaded_item(context, litem)?;
-                            continue;
-                        }
-                        let itemdef = if let Some(i) = input_items.next() {
-                            i
-                        } else {
-                            have_items = false;
-                            continue;
-                        };
-                        if load_threads < 2 || !self.is_expensive(&itemdef) {
-                            // Cheap item, just process inline.
-                            println!("Not expensive");
-                            let litem = self.load_item(itemdef)?;
-                            self.loaded_item(context, litem)?;
-                            continue;
-                        }
-                        // At this point we have an expensive item we need to add to the work
-                        // queue.
-                        work_in
-                            .lock()
-                            .map_err(|e| anyhow!("Work in mutex failure: {e:?}"))?
-                            .push_back(itemdef);
-
-                        for worker_idx in
-                            (last_worker_idx + 1..load_threads).chain(0..=last_worker_idx)
-                        {
-                            println!("Trying worker {worker_idx} (last {last_worker_idx}");
-                            match wi_txs[worker_idx].try_send(()) {
-                                Ok(_) => {
-                                    last_worker_idx = worker_idx;
-                                    pending += 1;
-                                    continue 'handle_items;
-                                }
-                                Err(e) => match e {
-                                    mpsc::TrySendError::Full(_) => continue,
-                                    mpsc::TrySendError::Disconnected(_) => {
-                                        bail!("Worker {worker_idx} unexpected disconnected!")
-                                    }
-                                },
-                            }
-                        }
-                        bail!("Unexpectedly there are no ready workers!");
-                    }
-                    anyhow::Ok(())
-                }
-            });
-            println!("Create workers");
-            let mut worker_threads = Vec::with_capacity(load_threads);
-            // This actually can't be something like .for_each because the
-            // closure counts as a "scope" apparently, which means the first
-            // thread will be created and then the scope will wait for it to exit.
-            for (tnum, wi_rx) in (0..load_threads).zip(wi_rxs.into_iter()) {
-                worker_threads.push({
-                    let (work_in, work_out) = (work_in.clone(), work_out.clone());
-                    let wo_tx = wo_tx.clone();
-
-                    sc.spawn({
-                        move || {
-                            let result = (|| {
-                                // println!(">> Thread {tnum} start.");
-                                while wi_rx.recv().is_ok() {
-                                    // println!("Thread {tnum} got token");
-                                    let itemdef = work_in
-                                        .lock()
-                                        .map_err(|e| {
-                                            anyhow!("Worker {tnum} work in mutex failure: {e:?}")
-                                        })?
-                                        .pop_front()
-                                        .ok_or_else(|| {
-                                            anyhow!("Unexpected empty input work queue!")
-                                        })?;
-                                    println!("\tWorker {tnum} working.");
-                                    let maybelitem = self.load_item(itemdef);
-                                    work_out
-                                        .lock()
-                                        .map_err(|e| {
-                                            anyhow!("Worker {tnum} work out mutex failure: {e:?}")
-                                        })?
-                                        .push_back(maybelitem);
-                                    wo_tx.send(())?;
-                                }
-                                println!("<< Thread {tnum} done.");
-                                anyhow::Ok(())
-                            })();
-                            println!("\tThread {tnum} result: {result:?}");
-                            result
-                        }
-                    })
-                });
-            }
-
-            for wt in worker_threads.into_iter() {
-                match wt.join() {
-                    Ok(r) => r?,
-                    Err(e) => std::panic::resume_unwind(e),
-                }
-            }
-            match loader_thread.join() {
-                Ok(r) => r?,
-                Err(e) => std::panic::resume_unwind(e),
-            }
-            anyhow::Ok(())
-        })?;
-
-        Ok(())
-    }
-    fn is_expensive(&self, itemdef: &Self::ItemDefinition) -> bool;
-    fn load_item(&self, itemdef: Self::ItemDefinition) -> Result<Self::LoadedItem>;
-    fn loaded_item(&self, context: &mut Self::Context, item: Self::LoadedItem) -> Result<()>;
-}
-
-impl<'a> Loader for RWKVLoader<'a> {
-    type Context = Vec<RWKVLoadedTensor<'a>>;
-    type ItemDefinition = (String, TensorData<'a>, Vec<f32>);
+impl<'a> GenericLoader for RWKVLoader<'a> {
+    type Context = RWKVLoadMap<'a>;
+    type ItemDefinition = RWKVLoaderItemDefinition<Vec<f32>>;
     type LoadedItem = RWKVLoadedTensor<'a>;
 
-    fn is_expensive(&self, itemdef: &Self::ItemDefinition) -> bool {
-        true
+    fn use_parallel(&self, itemdef: &Self::ItemDefinition) -> bool {
+        itemdef.use_parallel
     }
 
-    fn load_item(&self, (name, td, buf): Self::ItemDefinition) -> Result<Self::LoadedItem> {
-        use crate::loader::TensorType;
-        println!("load_item: {name}");
-
-        assert_eq!(
-            td.dtype,
-            TensorType::BFloat16,
-            "Bad input type, must be BF16!"
-        );
-        let shape = td
-            .shape
-            .iter()
-            .copied()
-            .filter(|i| *i != 1)
-            .collect::<Vec<_>>();
-        let shape = match shape.len() {
-            1 => [shape[0], 1],
-            2 => [shape[0], td.shape[1]],
-            _ => bail!("Expected 1 or 2d tensor!"),
-        };
-        let (layer, name) = {
-            if let Some(rest) = name.strip_prefix("blocks.") {
-                let result = rest
-                    .split_once('.')
-                    .ok_or_else(|| anyhow!("Bad tensor name format"))?;
-                let lnum: u32 = result.0.parse()?;
-                (Some(lnum), result.1.to_owned())
-            } else {
-                (None, name.to_owned())
-            }
-        };
-        let out_type = if Self::WTENSORS.contains(&name.as_str()) {
-            self.wtype
-        } else {
-            self.atype
-        };
-
-        match (&td.dtype, out_type) {
-            (TensorType::BFloat16, RwkvGgmlType::Q4_0 | RwkvGgmlType::Q4_1) => {
-                println!("QUANT: {name}");
+    fn load_one_item(&self, mut itemdef: Self::ItemDefinition) -> Result<Self::LoadedItem> {
+        if itemdef.name == Self::DECAY {
+            itemdef.data.iter_mut().for_each(|el| {
+                *el = -el.exp();
+            })
+        }
+        match &itemdef.out_type {
+            RwkvGgmlType::Q4_0 | RwkvGgmlType::Q4_1 => {
+                info!(
+                    "Quantizing {}{}{:?} ({:?})",
+                    itemdef
+                        .layer
+                        .as_ref()
+                        .map(|l| format!("{l}."))
+                        .unwrap_or_default(),
+                    itemdef.name,
+                    itemdef.shape,
+                    itemdef.out_type
+                );
                 Ok(RWKVLoadedTensor {
-                    layer,
-                    name,
-                    typ: out_type,
-                    data: RWKVLoadedTensorData::U8(Cow::Owned(quantize_simple(&td, out_type, buf))),
-                    shape,
+                    layer: itemdef.layer,
+                    name: itemdef.name,
+                    typ: itemdef.out_type,
+                    data: RWKVLoadedTensorData::U8(Cow::Owned(quantize_simple(
+                        &itemdef.shape,
+                        itemdef.out_type,
+                        itemdef.data,
+                    )?)),
+                    shape: itemdef.shape,
                 })
             }
-            (TensorType::BFloat16, RwkvGgmlType::Float32) => {
-                let data = RWKVLoadedTensorData::Float32(Cow::Owned(buf));
+            RwkvGgmlType::Float32 => {
+                let data = RWKVLoadedTensorData::Float32(Cow::Owned(itemdef.data));
                 Ok(RWKVLoadedTensor {
-                    layer,
-                    name,
+                    layer: itemdef.layer,
+                    name: itemdef.name,
+                    typ: itemdef.out_type,
                     data,
-                    typ: out_type,
-                    shape,
+                    shape: itemdef.shape,
                 })
             }
         }
     }
 
     fn loaded_item(&self, context: &mut Self::Context, item: Self::LoadedItem) -> Result<()> {
-        println!("Loaded {}", item.name);
-        context.push(item);
+        context.insert((item.layer, item.name.clone()), item);
         Ok(())
     }
 }
 
-impl<'a> Loader2 for RWKVLoader<'a> {
-    type Context = Vec<RWKVLoadedTensor<'a>>;
-    type ItemDefinition = (String, TensorData<'a>, Vec<f32>);
-    type LoadedItem = RWKVLoadedTensor<'a>;
-
-    fn is_expensive(&self, itemdef: &Self::ItemDefinition) -> bool {
-        // itemdef.0 == Self::DECAY || Self::WTENSORS.contains(&itemdef.0.as_str())
-        true
-    }
-
-    fn load_item(&self, (name, td, buf): Self::ItemDefinition) -> Result<Self::LoadedItem> {
-        use crate::loader::TensorType;
-        println!("load_item: {name}");
-
-        assert_eq!(
-            td.dtype,
-            TensorType::BFloat16,
-            "Bad input type, must be BF16!"
-        );
-        let shape = td
-            .shape
-            .iter()
-            .copied()
-            .filter(|i| *i != 1)
-            .collect::<Vec<_>>();
-        let shape = match shape.len() {
-            1 => [shape[0], 1],
-            2 => [shape[0], td.shape[1]],
-            _ => bail!("Expected 1 or 2d tensor!"),
-        };
-        let (layer, name) = {
-            if let Some(rest) = name.strip_prefix("blocks.") {
-                let result = rest
-                    .split_once('.')
-                    .ok_or_else(|| anyhow!("Bad tensor name format"))?;
-                let lnum: u32 = result.0.parse()?;
-                (Some(lnum), result.1.to_owned())
-            } else {
-                (None, name.to_owned())
-            }
-        };
-        let out_type = if Self::WTENSORS.contains(&name.as_str()) {
-            self.wtype
-        } else {
-            self.atype
-        };
-
-        match (&td.dtype, out_type) {
-            (TensorType::BFloat16, RwkvGgmlType::Q4_0 | RwkvGgmlType::Q4_1) => {
-                println!("QUANT: {name}");
-                Ok(RWKVLoadedTensor {
-                    layer,
-                    name,
-                    typ: out_type,
-                    data: RWKVLoadedTensorData::U8(Cow::Owned(quantize_simple(&td, out_type, buf))),
-                    shape,
-                })
-            }
-            (TensorType::BFloat16, RwkvGgmlType::Float32) => {
-                let data = RWKVLoadedTensorData::Float32(Cow::Owned(buf));
-                Ok(RWKVLoadedTensor {
-                    layer,
-                    name,
-                    data,
-                    typ: out_type,
-                    shape,
-                })
-            }
-        }
-    }
-
-    fn loaded_item(&self, context: &mut Self::Context, item: Self::LoadedItem) -> Result<()> {
-        println!("Loaded {}", item.name);
-        context.push(item);
-        Ok(())
-    }
-}
-
-fn quantize(bctx: &mut BuildCtx<'_, '_>, td: &TensorData<'_>) -> Tensor {
-    let wtype = bctx.wtype;
-
-    assert_eq!(
-        td.dtype,
-        crate::loader::TensorType::BFloat16,
-        "Bad input type, must be BF16!"
-    );
-    let nels = td.data.len() / 2;
-    let shp = &td.shape;
-    let in_size = nels * 4;
-    // FIXME: Verify this is safe, but 32bit -> 4bit shouldn't take more than 8bits per element
-    // plus maybe an extra block. Riiight?
-    bctx.qbuf.clear();
-    bctx.qbuf
-        .reserve((in_size / 4) + ggml::blck_size(wtype.into()));
-
-    let mut hist = [0i64; 16];
-    let out_size = unsafe {
-        match wtype {
-            RwkvGgmlType::Q4_0 => ggml_sys::ggml_quantize_q4_0(
-                bctx.buf.as_ptr(),
-                bctx.qbuf.as_mut_ptr() as *mut std::ffi::c_void,
-                nels as i32,
-                shp[1] as i32,
-                hist.as_mut_ptr(),
-            ),
-            RwkvGgmlType::Q4_1 => ggml_sys::ggml_quantize_q4_1(
-                bctx.buf.as_ptr(),
-                bctx.qbuf.as_mut_ptr() as *mut std::ffi::c_void,
-                nels as i32,
-                shp[1] as i32,
-                hist.as_mut_ptr(),
-            ),
-            _ => panic!("Bad weight type!"),
-        }
-    };
-    unsafe { bctx.qbuf.set_len(out_size) };
-    let t = bctx.ctx.new_tensor_2d(wtype.into(), shp[1], shp[0]);
-    unsafe { (t.data() as *mut u8).copy_from_nonoverlapping(bctx.qbuf.as_ptr(), out_size) }
-    t
-}
-
-fn quantize_simple(td: &TensorData<'_>, wtype: RwkvGgmlType, buf: Vec<f32>) -> Vec<u8> {
-    assert_eq!(
-        td.dtype,
-        crate::loader::TensorType::BFloat16,
-        "Bad input type, must be BF16!"
-    );
+fn quantize_simple(shape: &[usize], wtype: RwkvGgmlType, buf: Vec<f32>) -> Result<Vec<u8>> {
     let nels = buf.len();
-    let shp = &td.shape;
 
     // FIXME: Verify this is safe, but 32bit -> 4bit shouldn't take more than 8bits per element
     // plus maybe an extra block. Riiight?
     let mut qbuf = Vec::with_capacity(nels + ggml::blck_size(wtype.into()));
-    println!(
-        "###### {} {shp:?} - {}, {}",
-        td.name,
-        buf.len(),
-        qbuf.capacity()
-    );
-
     let mut hist = [0i64; 16];
     let out_size = unsafe {
         match wtype {
@@ -555,79 +149,175 @@ fn quantize_simple(td: &TensorData<'_>, wtype: RwkvGgmlType, buf: Vec<f32>) -> V
                 buf.as_ptr(),
                 qbuf.as_mut_ptr() as *mut std::ffi::c_void,
                 nels as i32,
-                shp[1] as i32,
+                shape[1] as i32,
                 hist.as_mut_ptr(),
             ),
             RwkvGgmlType::Q4_1 => ggml_sys::ggml_quantize_q4_1(
                 buf.as_ptr(),
                 qbuf.as_mut_ptr() as *mut std::ffi::c_void,
                 nels as i32,
-                shp[1] as i32,
+                shape[1] as i32,
                 hist.as_mut_ptr(),
             ),
-            _ => panic!("Bad weight type!"),
+            _ => bail!("Bad weight type!"),
         }
     };
     unsafe { qbuf.set_len(out_size) };
-    qbuf
+    Ok(qbuf)
 }
 
-/// Helper function for extracting a 1d tensor from the HashMap by string key.
-/// Takes a closure to convert from the TensorData struct to a usable format.
-fn gk1(bctx: &mut BuildCtx<'_, '_>, key: &str) -> Result<Tensor> {
-    let td = bctx
+/// Helper function for extracting a tensor from the HashMap by string key.
+fn gk(bctx: &mut BuildCtx<'_, '_>, dims: usize, key: &str) -> Result<Tensor> {
+    let ltensor = bctx
         .lm
-        .remove(key)
-        .map_or_else(|| Err(anyhow!("Missing tensor: {key}")), Ok)?;
-    let shp = td
+        .remove(&(bctx.lnum.map(|i| i as u32), key.to_string()))
+        .map_or_else(
+            || Err(anyhow!("Missing tensor: {key} (layer: {:?})", bctx.lnum)),
+            Ok,
+        )?;
+    let shp = ltensor
         .shape
         .iter()
         .copied()
         .filter(|i| *i != 1)
         .collect::<Vec<_>>();
-    let t = bctx.ctx.new_tensor_1d(GT32, shp[0]);
-    bf16_tensor_to_f32_buf(&td, &mut bctx.buf);
-    unsafe { (t.data() as *mut f32).copy_from_nonoverlapping(bctx.buf.as_ptr(), bctx.buf.len()) }
-    Ok(t)
+    ensure!(shp.len() == dims, "Unexpected shape for tensor {key}");
+    ensure!((1..=2).contains(&dims), "Unsupport dimensions for {key}");
+    let gtyp = ltensor.typ.into();
+    Ok(match (ltensor.typ, ltensor.data) {
+        (RwkvGgmlType::Float32, RWKVLoadedTensorData::Float32(buf)) => {
+            let t = if dims == 1 {
+                bctx.ctx.new_tensor_1d(gtyp, shp[0])
+            } else {
+                bctx.ctx.new_tensor_2d(gtyp, shp[1], shp[0])
+            };
+            unsafe {
+                t.write_data(bytemuck::cast_slice(buf.as_slice()));
+            }
+            t
+        }
+        (RwkvGgmlType::Q4_0 | RwkvGgmlType::Q4_1, RWKVLoadedTensorData::U8(buf)) => {
+            let t = if dims == 1 {
+                bctx.ctx.new_tensor_1d(gtyp, shp[0])
+            } else {
+                bctx.ctx.new_tensor_2d(gtyp, shp[1], shp[0])
+            };
+            unsafe {
+                t.write_data(buf.as_slice());
+            }
+            t
+        }
+        _ => bail!(
+            "Bad combination of loaded tensor type {:?} and data for {}",
+            ltensor.typ,
+            ltensor.name
+        ),
+    })
 }
 
-/// Helper function for extracting a 2d tensor from the HashMap by string key.
-/// Takes a closure to convert from the TensorData struct to a usable format.
-fn gk2(bctx: &mut BuildCtx<'_, '_>, key: &str) -> Result<Tensor> {
-    let td = bctx
-        .lm
-        .remove(key)
-        .map_or_else(|| Err(anyhow!("Missing tensor: {key}")), Ok)?;
-    bf16_tensor_to_f32_buf(&td, &mut bctx.buf);
-    let shp = &td.shape;
-    let t = bctx.ctx.new_tensor_2d(GT32, shp[1], shp[0]);
-    unsafe { (t.data() as *mut f32).copy_from_nonoverlapping(bctx.buf.as_ptr(), bctx.buf.len()) }
-    Ok(t)
+pub struct RWKVLoaderItemDefinition<T> {
+    layer: Option<u32>,
+    name: String,
+    shape: [usize; 2],
+    out_type: RwkvGgmlType,
+    use_parallel: bool,
+    data: T,
 }
 
-fn qgk2(bctx: &mut BuildCtx<'_, '_>, key: &str) -> Result<Tensor> {
-    if bctx.wtype == RwkvGgmlType::Float32 {
-        return gk2(bctx, key);
+// FIXME: Should be in an impl probably.
+pub fn load_rwkv(
+    max_load_threads: usize,
+    atype: RwkvGgmlType,
+    wtype: RwkvGgmlType,
+    tdm: TensorDataMap<'_>,
+) -> Result<RWKVLoadMap> {
+    use crate::loader::TensorType;
+
+    let tensorcount = tdm.len();
+    let mut plan = tdm
+        .into_iter()
+        .map(|(name, td)| {
+            ensure!(
+                td.dtype == TensorType::BFloat16,
+                "Currently can only handle BF16 tensors!"
+            );
+            let shape = td
+                .shape
+                .iter()
+                .copied()
+                .filter(|i| *i != 1)
+                .collect::<Vec<_>>();
+            let shape = match shape.len() {
+                1 => [shape[0], 1],
+                2 => [shape[0], td.shape[1]],
+                _ => bail!("Expected 1 or 2d tensor!"),
+            };
+            let (layer, name) = {
+                if let Some(rest) = name.strip_prefix("blocks.") {
+                    let result = rest
+                        .split_once('.')
+                        .ok_or_else(|| anyhow!("Bad tensor name format"))?;
+                    let lnum: u32 = result.0.parse()?;
+                    (Some(lnum), result.1.to_owned())
+                } else {
+                    (None, name.to_owned())
+                }
+            };
+            let (use_parallel, out_type) = if RWKVLoader::WTENSORS.contains(&name.as_str()) {
+                (true, wtype)
+            } else {
+                (name.as_str() == RWKVLoader::DECAY, atype)
+            };
+            Ok(RWKVLoaderItemDefinition {
+                layer,
+                name,
+                shape,
+                out_type,
+                use_parallel,
+                data: td,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    // The point here is to try to load the data from the mmapped model
+    // sequentially to avoid giving spinning rust a hard time.
+    // let mut tdi = tdm.into_iter().collect::<Vec<_>>();
+    plan.sort_unstable_by_key(|pi| pi.data.data.as_ptr() as usize);
+    let itemdefs = plan.into_iter().map(|pi| {
+        let mut buf = Vec::new();
+        bf16_tensor_to_f32_buf(&pi.data, &mut buf);
+        RWKVLoaderItemDefinition {
+            layer: pi.layer,
+            name: pi.name,
+            shape: pi.shape,
+            out_type: pi.out_type,
+            use_parallel: pi.use_parallel,
+            data: buf,
+        }
+    });
+    let mut loaded = HashMap::new();
+    info!("RWKV: Starting load of {tensorcount} tensor(s).");
+    RWKVLoader::<'static>::default().start_loading(&mut loaded, max_load_threads, itemdefs)?;
+    Ok(loaded)
+}
+
+#[repr(transparent)]
+pub struct Tents(Tensor);
+
+impl From<Tensor> for Tents {
+    fn from(value: Tensor) -> Self {
+        Self(value)
     }
-    let td = bctx
-        .lm
-        .remove(key)
-        .map_or_else(|| Err(anyhow!("Missing tensor: {key}")), Ok)?;
-    info!(
-        "[{}/{}]: Quantizing {key}({:?})",
-        bctx.lnum + 1,
-        bctx.n_layers,
-        td.shape
-    );
-    bf16_tensor_to_f32_buf(&td, &mut bctx.buf);
-    Ok(quantize(bctx, &td))
 }
 
 impl From<(&Context, Array1<ATy>)> for Tents {
     fn from((ctx, arr): (&Context, Array1<ATy>)) -> Self {
         let shp = arr.shape();
         let t = ctx.new_tensor_1d(GT32, shp[0]);
-        unsafe { (t.data() as *mut f32).copy_from_nonoverlapping(arr.as_ptr(), arr.len()) }
+        unsafe {
+            t.write_data(bytemuck::cast_slice(
+                arr.as_slice().expect("Impossible, can't get slice?"),
+            ));
+        }
         Self(t)
     }
 }
@@ -637,7 +327,11 @@ impl From<(&Context, Array2<ATy>)> for Tents {
         let shp = arr.shape();
         // NOTE: The order for shapes is reversed in GGML.
         let t = ctx.new_tensor_2d(GT32, shp[1], shp[0]);
-        unsafe { (t.data() as *mut f32).copy_from_nonoverlapping(arr.as_ptr(), arr.len()) }
+        unsafe {
+            t.write_data(bytemuck::cast_slice(
+                arr.as_slice().expect("Impossible, can't get slice?"),
+            ));
+        }
         Self(t)
     }
 }
@@ -648,8 +342,8 @@ impl TryFrom<(usize, &mut BuildCtx<'_, '_>)> for LayerNorm {
     #[instrument(skip_all, name = "convert_layer_norm", level = "DEBUG")]
     fn try_from((idx, bctx): (usize, &mut BuildCtx<'_, '_>)) -> Result<Self> {
         Ok(Self {
-            weight: gk1(bctx, &format!("ln{idx}.weight"))?,
-            bias: gk1(bctx, &format!("ln{idx}.bias"))?,
+            weight: gk(bctx, 1, &format!("ln{idx}.weight"))?,
+            bias: gk(bctx, 1, &format!("ln{idx}.bias"))?,
         })
     }
 }
@@ -659,20 +353,12 @@ impl TryFrom<&mut BuildCtx<'_, '_>> for AttTime {
 
     #[instrument(skip_all, err, name = "convert_attn_time_mix", level = "DEBUG")]
     fn try_from(bctx: &mut BuildCtx<'_, '_>) -> Result<Self> {
-        let key = "att.time_decay";
-        let td = bctx
-            .lm
-            .remove(key)
-            .map_or_else(|| Err(anyhow!("Missing tensor: {key}")), Ok)?;
-        let mut decay = <ATy as ConvertBF16Tensor<Array1<ATy>>>::convert_tensor(&td)?;
-        decay.mapv_inplace(|el| -el.exp());
-        let Tents(decay) = (bctx.ctx, decay).into();
         Ok(Self {
-            first: gk1(bctx, "att.time_first")?,
-            decay,
-            mix_k: Mix(gk1(bctx, "att.time_mix_k")?),
-            mix_v: Mix(gk1(bctx, "att.time_mix_v")?),
-            mix_r: Mix(gk1(bctx, "att.time_mix_r")?),
+            first: gk(bctx, 1, "att.time_first")?,
+            decay: gk(bctx, 1, "att.time_decay")?,
+            mix_k: Mix(gk(bctx, 1, "att.time_mix_k")?),
+            mix_v: Mix(gk(bctx, 1, "att.time_mix_v")?),
+            mix_r: Mix(gk(bctx, 1, "att.time_mix_r")?),
         })
     }
 }
@@ -683,10 +369,10 @@ impl TryFrom<&mut BuildCtx<'_, '_>> for Attention {
     #[instrument(skip_all, name = "convert_att", level = "DEBUG")]
     fn try_from(bctx: &mut BuildCtx<'_, '_>) -> Result<Self> {
         Ok(Self {
-            key_weight: qgk2(bctx, "att.key.weight")?,
-            value_weight: qgk2(bctx, "att.value.weight")?,
-            output_weight: qgk2(bctx, "att.output.weight")?,
-            receptance_weight: qgk2(bctx, "att.receptance.weight")?,
+            key_weight: gk(bctx, 2, "att.key.weight")?,
+            value_weight: gk(bctx, 2, "att.value.weight")?,
+            output_weight: gk(bctx, 2, "att.output.weight")?,
+            receptance_weight: gk(bctx, 2, "att.receptance.weight")?,
             time: AttTime::try_from(bctx)?,
         })
     }
@@ -698,8 +384,8 @@ impl TryFrom<&mut BuildCtx<'_, '_>> for FFNTime {
     #[instrument(skip_all, name = "convert_ffn_time_mix", level = "DEBUG")]
     fn try_from(bctx: &mut BuildCtx<'_, '_>) -> Result<Self> {
         Ok(Self {
-            mix_k: Mix(gk1(bctx, "ffn.time_mix_k")?),
-            mix_r: Mix(gk1(bctx, "ffn.time_mix_r")?),
+            mix_k: Mix(gk(bctx, 1, "ffn.time_mix_k")?),
+            mix_r: Mix(gk(bctx, 1, "ffn.time_mix_r")?),
         })
     }
 }
@@ -710,9 +396,9 @@ impl TryFrom<&mut BuildCtx<'_, '_>> for FeedForwardNetwork {
     #[instrument(skip_all, name = "convert_ffn", level = "DEBUG")]
     fn try_from(bctx: &mut BuildCtx<'_, '_>) -> Result<Self> {
         Ok(FeedForwardNetwork {
-            key_weight: qgk2(bctx, "ffn.key.weight")?,
-            value_weight: qgk2(bctx, "ffn.value.weight")?,
-            receptance_weight: qgk2(bctx, "ffn.receptance.weight")?,
+            key_weight: gk(bctx, 2, "ffn.key.weight")?,
+            value_weight: gk(bctx, 2, "ffn.value.weight")?,
+            receptance_weight: gk(bctx, 2, "ffn.receptance.weight")?,
             time: FFNTime::try_from(bctx)?,
         })
     }
@@ -732,51 +418,39 @@ impl TryFrom<&mut BuildCtx<'_, '_>> for RWKVLayer {
     }
 }
 
-impl TryFrom<(RwkvGgmlType, TensorDataMap<'_>)> for RWKV {
+impl TryFrom<(RwkvGgmlType, RWKVLoadMap<'_>)> for RWKV {
     type Error = Error;
 
     #[instrument(skip_all, name = "load_model")]
-    fn try_from((wtype, tensors): (RwkvGgmlType, TensorDataMap<'_>)) -> Result<Self> {
+    fn try_from((wtype, mut tensors): (RwkvGgmlType, RWKVLoadMap<'_>)) -> Result<Self> {
         info!("Discovering model structure.");
-        let mut layers = Vec::with_capacity(32);
-        let mut nlm = HashMap::default();
-        tensors.iter().try_for_each(|(name, tensor)| {
-            let mut name = name.to_owned();
-            if let Some(rest) = name.strip_prefix("blocks.") {
-                let result = rest.split_once('.').ok_or_else(|| anyhow!("Bad format"))?;
-                let lnum: usize = result.0.parse()?;
-                if lnum >= layers.len() {
-                    layers.resize_with(lnum + 1, HashMap::default);
-                }
-
-                name = result.1.to_string();
-                layers[lnum].insert(name, tensor.clone());
-                AOk(())
-            } else {
-                nlm.insert(name.to_owned(), tensor.clone());
-                Ok(())
-            }
-        })?;
-        let n_layers = layers.len();
+        let (n_layers, f32_size, quantized_size) =
+            tensors
+                .values()
+                .fold((0, 0, 0), |(maxlayer, f32size, qsize), lt| {
+                    let maxlayer = maxlayer.max(lt.layer.map(|i| i + 1).unwrap_or(0) as usize);
+                    let (f32size, qsize) = match &lt.data {
+                        RWKVLoadedTensorData::Float32(v) => (f32size + (v.len() * 4), qsize),
+                        RWKVLoadedTensorData::U8(v) => (f32size, qsize + v.len()),
+                    };
+                    (maxlayer, f32size, qsize)
+                });
 
         anyhow::ensure!(n_layers > 0, "Not even one measly layer?");
-        anyhow::ensure!(
-            layers.iter().all(|lm| !lm.is_empty()),
-            "Unexpected empty layers!"
-        );
-        anyhow::ensure!(!nlm.is_empty(), "Missing non-layer tensors!");
-
-        let (n_vocab, n_embed) = nlm
-            .get("emb.weight")
-            .ok_or_else(|| anyhow!("Bad format"))
+        info!("Model stats: Layer(s): {n_layers}, f32 tensor total size: {:.3}GiB, quantized tensor total size: {:.3}GiB",
+        (f32_size as f64) / (1024.0 * 1024.0 * 1024.0), (quantized_size as f64) / (1024.0 * 1024.0 * 1024.0)
+    );
+        let (n_vocab, n_embed) = tensors
+            .get(&(None, "emb.weight".to_string()))
+            .ok_or_else(|| anyhow!("Missing emb.weight tensor"))
             .map(|x| {
                 let shp = &x.shape;
                 assert_eq!(shp.len(), 2, "Bad shape for emb.weight!");
                 (shp[0], shp[1])
-                //
             })?;
         // FIXME; Better stuff here.
-        let ctx_size = (n_layers + (4.max(n_layers / 5))) * (n_embed + (n_embed / 20)) * n_vocab;
+        let ctx_size = f32_size + quantized_size;
+        let ctx_size = ctx_size + (ctx_size / 40);
         info!(
             "Guessed GGML context size: {:.3}GiB",
             ctx_size as f64 / (1024.0 * 1024.0 * 1024.0)
@@ -786,11 +460,47 @@ impl TryFrom<(RwkvGgmlType, TensorDataMap<'_>)> for RWKV {
 
         // It's possible to just precompute the embeddings in advance.
         let emb = {
-            let ln0 = crate::simple::model::LayerNorm::<f32>::try_from((0, &layers[0]))?;
+            let ln0weight = tensors
+                .remove(&(Some(0), "ln0.weight".to_string()))
+                .ok_or_else(|| anyhow!("ln0.weight tensor missing!"))?;
+            let ln0bias = tensors
+                .remove(&(Some(0), "ln0.bias".to_string()))
+                .ok_or_else(|| anyhow!("ln0.bias tensor missing!"))?;
+            let ln0 = match (ln0weight, ln0bias) {
+                (
+                    RWKVLoadedTensor {
+                        typ: RwkvGgmlType::Float32,
+                        data: RWKVLoadedTensorData::Float32(wdata),
+                        ..
+                    },
+                    RWKVLoadedTensor {
+                        typ: RwkvGgmlType::Float32,
+                        data: RWKVLoadedTensorData::Float32(bdata),
+                        ..
+                    },
+                ) => {
+                    #[allow(clippy::unnecessary_to_owned)]
+                    // Shush, Clippy. It actually is necessary here.
+                    crate::simple::model::LayerNorm::<f32> {
+                        weight: Array1::from_iter(wdata.into_owned().into_iter()),
+                        bias: Array1::from_iter(bdata.into_owned().into_iter()),
+                    }
+                }
+                _ => bail!("Unexpected format for ln0 tensors!"),
+            };
             info!("Precomputing embedding... Embedding: {n_embed}, Vocab: {n_vocab}");
-            let mut emba = <ATy as ConvertBF16Tensor<Array2<ATy>>>::convert_tensor(
-                nlm.get("emb.weight").ok_or_else(|| anyhow!("Bad format"))?,
-            )?;
+            let mut emba = match tensors
+                .remove(&(None, "emb.weight".to_string()))
+                .ok_or_else(|| anyhow!("Missing emb.weight tensor!"))?
+            {
+                RWKVLoadedTensor {
+                    shape,
+                    typ: RwkvGgmlType::Float32,
+                    data: RWKVLoadedTensorData::Float32(wdata),
+                    ..
+                } if shape[1] != 1 => Array2::from_shape_vec(shape, wdata.into_owned())?,
+                _ => bail!("Unexpected format for emb.weight tensor!"),
+            };
 
             (0..n_vocab).for_each(|idx| {
                 use crate::model_traits::RunLayerNorm;
@@ -800,29 +510,19 @@ impl TryFrom<(RwkvGgmlType, TensorDataMap<'_>)> for RWKV {
                     .expect("Impossible: into_slice_memory_order failed!");
                 idxemb.copy_from_slice(&ln0.norm(&idxemb).into_raw_vec());
             });
-            drop(ln0);
-
             let Tents(emb) = (&ctx, emba).into();
             emb
         };
 
-        info!("Loading {n_layers} layer(s):");
-
+        info!("Building {n_layers} layer(s):");
         let mut bctx = BuildCtx {
-            n_layers,
-            lnum: 0,
+            lnum: None,
             ctx: &ctx,
-            lm: Default::default(),
-            wtype,
-            buf: Vec::with_capacity(256 * 1024 * 1024),
-            qbuf: Vec::default(),
+            lm: tensors,
         };
-        let layers = layers
-            .into_iter()
-            .enumerate()
-            .map(|(lnum, lm)| {
-                bctx.lnum = lnum;
-                bctx.lm = lm;
+        let layers = (0..n_layers)
+            .map(|lnum| {
+                bctx.lnum = Some(lnum);
                 if wtype == RwkvGgmlType::Float32 {
                     print!(".");
                     stdout().flush().ok();
@@ -831,14 +531,15 @@ impl TryFrom<(RwkvGgmlType, TensorDataMap<'_>)> for RWKV {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        println!();
-
-        info!("Loading non-layer tensors.");
-        bctx.lm = nlm;
-        let head_weight = gk2(&mut bctx, "head.weight")?;
+        if wtype == RwkvGgmlType::Float32 {
+            println!();
+        }
+        bctx.lnum = None;
+        info!("Building non-layer tensors.");
+        let head_weight = gk(&mut bctx, 2, "head.weight")?;
         let ln_out = LayerNorm {
-            weight: gk1(&mut bctx, "ln_out.weight")?,
-            bias: gk1(&mut bctx, "ln_out.bias")?,
+            weight: gk(&mut bctx, 1, "ln_out.weight")?,
+            bias: gk(&mut bctx, 1, "ln_out.bias")?,
         };
         info!(
             "GGML context size after load: {:.3}GiB",

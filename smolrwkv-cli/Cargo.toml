@@ -10,7 +10,6 @@ ggml = ["smolrwkv/ggml"]
 torch = ["smolrwkv/torch"]
 
 [dependencies]
-mmap-rs = "0.5"
 anyhow = "1"
 ndarray = { version = "0.15", features = ["rayon"] }
 rayon = "1.7"
