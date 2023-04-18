@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use anyhow::{anyhow, Ok, Result};
 use clap::Parser;
 use ndarray::{Array2, ArrayView1};
@@ -8,7 +10,7 @@ use tracing::info;
 use smolrwkv::{
     loader::TensorDataMap,
     quantized::model::TensorQ2,
-    simple::{self as S},
+    simple as S,
     util::{mmap_file, run_threadlimited, sample_probs},
 };
 
@@ -20,12 +22,21 @@ use util::{show_token, Ctx, FloatType};
 
 pub fn setup_logging() {
     use tracing::metadata::LevelFilter;
-    use tracing_subscriber::{fmt, layer::SubscriberExt, Layer};
+    use tracing_subscriber::{fmt, fmt::time::FormatTime, layer::SubscriberExt, Layer};
+
+    #[derive(Clone, Debug, Copy, PartialEq, Eq)]
+    struct Elapsed(Instant);
+    impl FormatTime for Elapsed {
+        fn format_time(&self, w: &mut fmt::format::Writer<'_>) -> std::fmt::Result {
+            let e = self.0.elapsed();
+            write!(w, "{:4}.{:02}s", e.as_secs(), e.subsec_millis() / 10)
+        }
+    }
 
     let fmt_layer = fmt::layer()
         .compact()
         // .with_span_events(FmtSpan::FULL)
-        .with_timer(tracing_subscriber::fmt::time::uptime())
+        .with_timer(Elapsed(Instant::now()))
         .with_filter(
             tracing_subscriber::EnvFilter::builder()
                 .with_default_directive(LevelFilter::INFO.into())
@@ -53,7 +64,14 @@ fn go() -> Result<()> {
     let tokenizer = Tokenizer::from_file(tokenizerfn).map_err(|e| anyhow!(e))?;
     info!("Loading model from: {modelfn}");
     let mm = mmap_file(modelfn)?;
-    let tdm: TensorDataMap<'_> = (modelfn.clone(), mm.as_slice()).try_into()?;
+    #[cfg(unix)]
+    mm.advise(memmap2::Advice::Random)?;
+    let tdm: TensorDataMap<'_> = (modelfn.clone(), &mm).try_into()?;
+    #[cfg(unix)]
+    {
+        mm.advise(memmap2::Advice::WillNeed)?;
+        mm.advise(memmap2::Advice::Sequential)?;
+    }
 
     let context = match &args.eval_mode {
         args::EvalType::NDf32 => {
@@ -78,7 +96,11 @@ fn go() -> Result<()> {
         }
         #[cfg(feature = "ggml")]
         args::EvalType::GGMLf32 | args::EvalType::GGMLQ4_0 | args::EvalType::GGMLQ4_1 => {
-            use smolrwkv::ggml::{context::RWKVContext, loader::RwkvGgmlType};
+            use smolrwkv::ggml::{
+                context::RWKVContext,
+                loader::{load_rwkv, RwkvGgmlType},
+            };
+
             let wtype = match args.eval_mode {
                 args::EvalType::GGMLf32 => RwkvGgmlType::Float32,
                 args::EvalType::GGMLQ4_0 => RwkvGgmlType::Q4_0,
@@ -86,8 +108,9 @@ fn go() -> Result<()> {
                 _ => panic!("Impossible: Bad eval mode!"),
             };
             info!("Backend type: GGML {wtype:?}");
+            let ltensors = load_rwkv(args.max_load_threads, RwkvGgmlType::Float32, wtype, tdm)?;
             Ctx::Ggml(RWKVContext::new(
-                (wtype, tdm).try_into()?,
+                (wtype, ltensors).try_into()?,
                 tokenizer,
                 args.max_eval_threads,
             ))
@@ -113,8 +136,6 @@ fn go() -> Result<()> {
     // which means thread limiting requires special handling.
     let (tcount, elapsed) = match context {
         Ctx::NdFloat32(mut context) => run_threadlimited(args.max_eval_threads, || {
-            use std::time::Instant;
-
             context.feed_prompt(args.prompt, Some(show_token))?;
 
             let mut tcount = 0;
@@ -130,8 +151,6 @@ fn go() -> Result<()> {
             Ok((tcount, etime - stime))
         }),
         Ctx::NdQuant8(mut context) => run_threadlimited(args.max_eval_threads, || {
-            use std::time::Instant;
-
             context.feed_prompt(args.prompt, Some(show_token))?;
 
             let mut tcount = 0;
@@ -148,8 +167,6 @@ fn go() -> Result<()> {
         }),
         #[cfg(feature = "ggml")]
         Ctx::Ggml(mut context) => {
-            use std::time::Instant;
-
             context.feed_prompt(args.prompt, Some(show_token))?;
 
             let mut tcount = 0;

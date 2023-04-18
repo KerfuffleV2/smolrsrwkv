@@ -24,21 +24,6 @@ pub struct RWKVContext {
     pub tokenizer: Tokenizer,
 }
 
-// fn dump_tensor(lbl: &str, t: &Tensor) {
-//     let mut merp = vec![0f32; 10];
-//     unsafe {
-//         let td = std::slice::from_raw_parts(t.data() as *const f32, t.nelements());
-//         merp[0..5].copy_from_slice(&td[0..5]);
-//         merp[5..10].copy_from_slice(&td[td.len() - 5..td.len()]);
-//     }
-//     println!(
-//         "{lbl}: {:?}, type: {:?} | {:?}",
-//         t.get_ne(),
-//         t.get_type(),
-//         merp
-//     );
-// }
-
 impl RWKVContext {
     pub fn new(rwkv: RWKV, tokenizer: Tokenizer, eval_threads: usize) -> Self {
         let ctx = &rwkv.ctx;
@@ -84,12 +69,14 @@ impl RWKVContext {
             .map_err(|e| anyhow!(e))?;
 
         for tid in toks.get_ids().iter() {
-            let tid = *tid as i32;
-            self.token_tensor.set_i32_1d(0, tid);
+            unsafe {
+                self.token_tensor
+                    .write_data(bytemuck::bytes_of(&(*tid as i32)));
+            }
             ctx.graph_compute(&mut self.ggml_graph);
             if let Some(f) = &f {
                 self.tokenizer
-                    .decode(vec![tid as u32], false)
+                    .decode(vec![*tid], false)
                     .map(f)
                     .map_err(|e| anyhow!(e))?;
             }
@@ -98,6 +85,7 @@ impl RWKVContext {
             self.result_tensor.get_ne()[0] as usize,
             self.last_probs.len()
         );
+        // FIXME: Use ggml tensor manipulation methods?
         unsafe {
             (self.result_tensor.data() as *const f32)
                 .copy_to_nonoverlapping(self.last_probs.as_mut_ptr(), self.last_probs.len());
@@ -122,14 +110,17 @@ impl RWKVContext {
             .decode(vec![tokid as u32], false)
             .map_err(|e| anyhow!(e))?;
 
-        let tid = tokid as i32;
-        self.token_tensor.set_i32_1d(0, tid);
+        unsafe {
+            self.token_tensor
+                .write_data(bytemuck::bytes_of(&(tokid as i32)));
+        }
 
         ctx.graph_compute(&mut self.ggml_graph);
         assert_eq!(
             self.result_tensor.get_ne()[0] as usize,
             self.last_probs.len()
         );
+        // FIXME: Use ggml tensor manipulation methods?
         unsafe {
             (self.result_tensor.data() as *const f32)
                 .copy_to_nonoverlapping(self.last_probs.as_mut_ptr(), self.last_probs.len());

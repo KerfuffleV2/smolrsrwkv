@@ -2,7 +2,8 @@
 use std::ops::{Add, Sub};
 
 use anyhow::{anyhow, ensure, Result};
-use mmap_rs::{MmapFlags, MmapOptions};
+use half::slice::HalfFloatSliceExt;
+use memmap2::{Mmap, MmapOptions};
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2, NdFloat, ScalarOperand, Zip};
 use num_traits::FromPrimitive;
 use tracing::instrument;
@@ -66,18 +67,12 @@ impl ConvertBF16Tensor<TensorQ2> for f32 {
 }
 
 /// Helper function for opening a file and mmaping it.
-pub fn mmap_file(s: &str) -> Result<mmap_rs::Mmap> {
+pub fn mmap_file(s: &str) -> Result<Mmap> {
     let fp = std::fs::File::open(s)?;
-    let flen = fp.metadata()?.len();
-    unsafe {
-        MmapOptions::new(flen as usize)
-            .and_then(|mo| {
-                mo.with_file(fp, 0)
-                    .with_flags(MmapFlags::NO_CORE_DUMP)
-                    .map()
-            })
-            .map_err(|e| anyhow!(e))
-    }
+    let m = unsafe { MmapOptions::new().map(&fp)? };
+    #[cfg(unix)]
+    m.advise(memmap2::Advice::DontDump)?;
+    Ok(m)
 }
 
 /// Uses a pool to run a function with a limited number of threads.
@@ -110,19 +105,22 @@ fn bf16_tensor_to_f32(tensor: &TensorData<'_>) -> Vec<f32> {
 /// vector of f32. The number of dimensions doesn't matter at this
 /// point.
 pub fn bf16_tensor_to_f32_buf(tensor: &TensorData<'_>, buf: &mut Vec<f32>) {
+    use half::slice::HalfBitsSliceExt;
+
     assert_eq!(tensor.dtype, TensorType::BFloat16, "Expected BF16 tensor");
     assert_ne!(tensor.data.len() & 1, 1, "Odd size for BF16 tensor input");
     let elcount = tensor.data.len() / 2;
 
     buf.clear();
     buf.reserve(elcount);
-    tensor
-        .data
-        .chunks_exact(2)
-        .zip(buf.spare_capacity_mut()[0..elcount].iter_mut())
-        .for_each(|(hbytes, dst)| {
-            dst.write(half::bf16::from_le_bytes([hbytes[0], hbytes[1]]).to_f32());
-        });
+    let src: &[half::bf16] = bytemuck::cast_slice::<_, u16>(tensor.data).reinterpret_cast();
+    let dst = unsafe {
+        // This is only ever written to.
+        std::mem::transmute::<&mut [std::mem::MaybeUninit<f32>], &mut [f32]>(
+            &mut buf.spare_capacity_mut()[0..elcount],
+        )
+    };
+    src.convert_to_f32_slice(dst);
     unsafe { buf.set_len(elcount) };
 }
 

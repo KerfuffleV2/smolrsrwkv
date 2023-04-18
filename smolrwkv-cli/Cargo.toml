@@ -10,7 +10,6 @@ ggml = ["smolrwkv/ggml"]
 torch = ["smolrwkv/torch"]
 
 [dependencies]
-mmap-rs = "0.5"
 anyhow = "1"
 ndarray = { version = "0.15", features = ["rayon"] }
 rayon = "1.7"
@@ -19,6 +18,7 @@ rand = "0.8"
 clap = { version = "4.2", features=["derive", "cargo"]}
 tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
 tracing = "0.1"
+memmap2 = "0.5"
 # tracing-flame = "0.2"
 
 smolrwkv = { path = "../smolrwkv" }
