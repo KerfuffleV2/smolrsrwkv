@@ -1,122 +1,99 @@
-use ggml::{Context, Tensor};
+use rusty_ggml::tensor::GgmlTensor as Tensor;
 
 use super::{map_ops, model::*};
 
 impl LayerNorm {
-    pub fn norm_ops(&self, ctx: &Context, x: &Tensor) -> Tensor {
-        ctx.op_add(&ctx.op_mul(&ctx.op_norm(x), &self.weight), &self.bias)
+    pub fn norm_ops<T: AsRef<Tensor<1>>>(&self, x: T) -> Tensor<1> {
+        (x.as_ref().norm() * &self.weight) + &self.bias
     }
 }
 
 impl Mix {
-    pub fn mix_ops(&self, ctx: &Context, x: &Tensor, last_x: &Tensor) -> Tensor {
-        ctx.op_add(
-            &ctx.op_mul(x, &self.0),
-            &ctx.op_mul(last_x, &map_ops::one_minus(ctx, &self.0)),
-        )
+    pub fn mix_ops<TX: AsRef<Tensor<1>>, TLX: AsRef<Tensor<1>>>(
+        &self,
+        x: TX,
+        last_x: TLX,
+    ) -> Tensor<1> {
+        (x.as_ref() * &self.0) + (last_x.as_ref() * map_ops::one_minus(&self.0))
     }
 }
 
 impl FeedForwardNetwork {
-    pub fn channel_mixing_ops(
-        &self,
-        ctx: &Context,
-        state: &mut RWKVLayerState,
-        x: Tensor,
-    ) -> Tensor {
-        let xk = &self.time.mix_k.mix_ops(ctx, &x, &state.cm_last_x);
-        let xr = &self.time.mix_r.mix_ops(ctx, &x, &state.cm_last_x);
+    pub fn channel_mixing_ops(&self, state: &mut RWKVLayerState, x: Tensor<1>) -> Tensor<1> {
+        let xk = self.time.mix_k.mix_ops(&x, &state.cm_last_x);
+        let xr = self.time.mix_r.mix_ops(&x, &state.cm_last_x);
 
-        let r = &map_ops::sigmoid(ctx, &ctx.op_mul_mat(&self.receptance_weight, xr));
-        let k = &map_ops::relu_squared(ctx, &ctx.op_mul_mat(&self.key_weight, xk));
+        let r = map_ops::sigmoid(self.receptance_weight.mul_mat_smallrhs(xr));
+        let k = &map_ops::relu_squared(self.key_weight.mul_mat_smallrhs(xk));
 
-        state.cm_last_x = ctx.op_cpy(&x, &state.cm_last_x);
-        ctx.op_mul(r, &ctx.op_mul_mat(&self.value_weight, k))
+        state.cm_last_x = state.cm_last_x.clone().copy_from(x);
+        r * self.value_weight.mul_mat_smallrhs(k)
     }
 }
 
 impl Attention {
-    pub fn time_mixing_ops(&self, ctx: &Context, state: &mut RWKVLayerState, x: Tensor) -> Tensor {
+    pub fn time_mixing_ops(&self, state: &mut RWKVLayerState, x: Tensor<1>) -> Tensor<1> {
         let (tm_last_x, aa, bb, pp) = (&state.tm_last_x, &state.tm_aa, &state.tm_bb, &state.tm_pp);
 
-        let xk = &self.time.mix_k.mix_ops(ctx, &x, tm_last_x);
-        let xv = &self.time.mix_v.mix_ops(ctx, &x, tm_last_x);
-        let xr = &self.time.mix_r.mix_ops(ctx, &x, tm_last_x);
+        let xk = self.time.mix_k.mix_ops(&x, tm_last_x);
+        let xv = self.time.mix_v.mix_ops(&x, tm_last_x);
+        let xr = self.time.mix_r.mix_ops(&x, tm_last_x);
 
-        let r = &map_ops::sigmoid(ctx, &ctx.op_mul_mat(&self.receptance_weight, xr));
-        let k = &ctx.op_mul_mat(&self.key_weight, xk);
-        let v = &ctx.op_mul_mat(&self.value_weight, xv);
+        let r = map_ops::sigmoid(self.receptance_weight.mul_mat_smallrhs(xr));
+        let k = &self.key_weight.mul_mat_smallrhs(xk);
+        let v = &self.value_weight.mul_mat_smallrhs(xv);
 
         let (a, b) = {
-            let ww = &ctx.op_add(&self.time.first, k);
-            let qq = &map_ops::max(ctx, ww, pp);
-            let e1 = &map_ops::sub_exp(ctx, pp, qq);
-            let e2 = &map_ops::sub_exp(ctx, ww, qq);
-            let a = ctx.op_add(&ctx.op_mul(e1, aa), &ctx.op_mul(e2, v));
-            let b = ctx.op_add(&ctx.op_mul(e1, bb), e2);
+            let ww = &self.time.first + k;
+            let qq = map_ops::max(&ww, pp);
+            let e1 = map_ops::sub_exp(pp, &qq);
+            let e2 = map_ops::sub_exp(ww, qq);
+            let a = &e1 * aa + &e2 * v;
+            let b = (e1 * bb) + e2;
             (a, b)
         };
 
         let (wkv, new_aa, new_bb, new_pp) = {
-            let ww = &ctx.op_add(pp, &self.time.decay);
-            let qq = map_ops::max(ctx, ww, k);
-            let e1 = &map_ops::sub_exp(ctx, ww, &qq);
-            let e2 = &map_ops::sub_exp(ctx, k, &qq);
-            let wkv = map_ops::div(ctx, &a, &b);
+            let ww = pp + &self.time.decay;
+            let qq = map_ops::max(&ww, k);
+            let e1 = map_ops::sub_exp(ww, &qq);
+            let e2 = map_ops::sub_exp(k, &qq);
+            let wkv = a / b;
 
-            let new_aa = ctx.op_add(&ctx.op_mul(e1, aa), &ctx.op_mul(e2, v));
-            let new_bb = ctx.op_add(&ctx.op_mul(e1, bb), e2);
+            let new_aa = &e1 * aa + &e2 * v;
+            let new_bb = (e1 * bb) + e2;
             let new_pp = qq;
 
             (wkv, new_aa, new_bb, new_pp)
         };
 
-        state.tm_last_x = ctx.op_cpy(&x, &state.tm_last_x);
-        state.tm_aa = ctx.op_cpy(&new_aa, &state.tm_aa);
-        state.tm_bb = ctx.op_cpy(&new_bb, &state.tm_bb);
-        state.tm_pp = ctx.op_cpy(&new_pp, &state.tm_pp);
+        state.tm_last_x = state.tm_last_x.clone().copy_from(x);
+        state.tm_aa = state.tm_aa.clone().copy_from(new_aa);
+        state.tm_bb = state.tm_bb.clone().copy_from(new_bb);
+        state.tm_pp = state.tm_pp.clone().copy_from(new_pp);
 
-        ctx.op_mul_mat(&self.output_weight, &ctx.op_mul(r, &wkv))
+        self.output_weight.mul_mat_smallrhs(r * wkv)
     }
 }
 
 impl RWKVLayer {
-    pub fn evaluate_layer_ops(
-        &self,
-        ctx: &Context,
-        state: &mut RWKVLayerState,
-        x: Tensor,
-    ) -> Tensor {
-        let x = ctx.op_add(
-            &self
-                .att
-                .time_mixing_ops(ctx, state, self.ln_tm.norm_ops(ctx, &x)),
-            &x,
-        );
-        ctx.op_add(
-            &self
-                .ffn
-                .channel_mixing_ops(ctx, state, self.ln_cm.norm_ops(ctx, &x)),
-            &x,
-        )
+    pub fn evaluate_layer_ops(&self, state: &mut RWKVLayerState, x: Tensor<1>) -> Tensor<1> {
+        let x = self.att.time_mixing_ops(state, self.ln_tm.norm_ops(&x)) + x;
+        self.ffn.channel_mixing_ops(state, self.ln_cm.norm_ops(&x)) + x
     }
 }
 
 impl RWKV {
-    pub fn evaluate_ops(
-        &self,
-        ctx: &Context,
-        state: &mut [RWKVLayerState],
-        token: Tensor,
-    ) -> Tensor {
-        let initial_x = ctx.op_get_rows(&self.emb, &token);
+    pub fn evaluate_ops(&self, state: &mut [RWKVLayerState], token: Tensor<1>) -> Tensor<1> {
+        let initial_x = self.emb.get_rows(token);
+        let initial_x = initial_x.view([initial_x.elements() as i64], [0]);
         let x = self
             .layers
             .iter()
             .enumerate()
             .fold(initial_x, |x, (lnum, layer)| {
-                layer.evaluate_layer_ops(ctx, &mut state[lnum], x)
+                layer.evaluate_layer_ops(&mut state[lnum], x)
             });
-        ctx.op_mul_mat(&self.head_weight, &self.ln_out.norm_ops(ctx, &x))
+        self.head_weight.mul_mat_smallrhs(self.ln_out.norm_ops(&x))
     }
 }

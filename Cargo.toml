@@ -3,7 +3,7 @@ members = ["smolrwkv", "smolrwkv-cli"]
 resolver = "2"
 
 [workspace.package]
-version = "0.4.1"
+version = "0.5.0"
 
 [profile.release]
 # Needed for profiling. Shouldn't affect performance.

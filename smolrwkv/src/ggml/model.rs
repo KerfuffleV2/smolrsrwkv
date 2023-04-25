@@ -1,28 +1,31 @@
-use ggml::{Context, Tensor, Type as GT};
+use rusty_ggml::{
+    context::GgmlContext as Context,
+    tensor::{GgmlElementType as GT, GgmlTensor as Tensor},
+};
 
 // Corresponds to:
 // 1. blocks.N.att.time_mix_[kvr]
 // 2. blocks.N.ffn.time_mix_[kr]
-pub struct Mix(pub Tensor);
+pub struct Mix(pub Tensor<1>);
 
 /// Corresponds to:
 /// 1. ln_out.[bias,weight]
 /// 2. blocks.N.ln[012].[bias,weight]
 /// However, note that ln0 only exists in block 0.
 pub struct LayerNorm {
-    pub bias: Tensor,
-    pub weight: Tensor,
+    pub bias: Tensor<1>,
+    pub weight: Tensor<1>,
 }
 
 /// Corresponds to:
 /// 1. blocks.N.time_[first,decay]
 /// 2. blocks.N.time_mix_[kvr]
 pub struct AttTime {
-    pub decay: Tensor,
+    pub decay: Tensor<1>,
     pub mix_k: Mix,
     pub mix_v: Mix,
     pub mix_r: Mix,
-    pub first: Tensor,
+    pub first: Tensor<1>,
 }
 
 /// Corresponds to:
@@ -36,10 +39,10 @@ pub struct FFNTime {
 /// 1. blocks.N.att.[key,value,output,receptance].weight
 /// 3. Keys described in AttTime.
 pub struct Attention {
-    pub key_weight: Tensor,
-    pub value_weight: Tensor,
-    pub output_weight: Tensor,
-    pub receptance_weight: Tensor,
+    pub key_weight: Tensor<2>,
+    pub value_weight: Tensor<2>,
+    pub output_weight: Tensor<2>,
+    pub receptance_weight: Tensor<2>,
     pub time: AttTime,
 }
 
@@ -47,9 +50,9 @@ pub struct Attention {
 /// 1. blocks.N.ffn.[key,value,receptance].weight
 /// 3. Keys described in FFNTime.
 pub struct FeedForwardNetwork {
-    pub key_weight: Tensor,
-    pub value_weight: Tensor,
-    pub receptance_weight: Tensor,
+    pub key_weight: Tensor<2>,
+    pub value_weight: Tensor<2>,
+    pub receptance_weight: Tensor<2>,
     pub time: FFNTime,
 }
 
@@ -65,8 +68,8 @@ pub struct RWKVLayer {
 
 pub struct RWKV {
     pub ctx: Context,
-    pub emb: Tensor,
-    pub head_weight: Tensor,
+    pub emb: Tensor<2>,
+    pub head_weight: Tensor<2>,
     pub ln_out: LayerNorm,
     // pub ln0: LayerNorm,
     pub layers: Vec<RWKVLayer>,
@@ -80,31 +83,33 @@ pub struct RWKV {
 }
 
 pub struct RWKVLayerState {
-    pub tm_last_x: Tensor,
-    pub tm_aa: Tensor,
-    pub tm_bb: Tensor,
-    pub tm_pp: Tensor,
-    pub cm_last_x: Tensor,
+    pub tm_last_x: Tensor<1>,
+    pub tm_aa: Tensor<1>,
+    pub tm_bb: Tensor<1>,
+    pub tm_pp: Tensor<1>,
+    pub cm_last_x: Tensor<1>,
 }
 
 impl RWKVLayerState {
     pub fn new(ctx: &Context, n_embed: usize) -> Self {
-        let cm_last_x = ctx.new_tensor_1d(GT::F32, n_embed);
-        let tm_last_x = ctx.new_tensor_1d(GT::F32, n_embed);
-        let tm_aa = ctx.new_tensor_1d(GT::F32, n_embed);
-        let tm_bb = ctx.new_tensor_1d(GT::F32, n_embed);
+        let mut cm_last_x = ctx.tensor(GT::F32, [n_embed]);
+        let mut tm_last_x = ctx.tensor(GT::F32, [n_embed]);
+        let mut tm_aa = ctx.tensor(GT::F32, [n_embed]);
+        let mut tm_bb = ctx.tensor(GT::F32, [n_embed]);
+        let mut tm_pp = ctx.tensor(GT::F32, [n_embed]);
 
-        cm_last_x.zero_data();
-        tm_last_x.zero_data();
-        tm_aa.zero_data();
-        tm_bb.zero_data();
-
-        // FIXME: Better way?
-        let tm_pp = ctx.new_tensor_1d(GT::F32, n_embed);
+        // FIXME: This is pretty nasty.
         unsafe {
-            let d = std::slice::from_raw_parts_mut(tm_pp.data() as *mut f32, n_embed);
-            d.iter_mut().for_each(|d| *d = f32::NEG_INFINITY);
-        }
+            cm_last_x.with_data_mut(|d| d.iter_mut().for_each(|dst| *dst = 0));
+            tm_last_x.with_data_mut(|d| d.iter_mut().for_each(|dst| *dst = 0));
+            tm_aa.with_data_mut(|d| d.iter_mut().for_each(|dst| *dst = 0));
+            tm_bb.with_data_mut(|d| d.iter_mut().for_each(|dst| *dst = 0));
+            tm_pp.with_data_mut(|d| {
+                let s = std::slice::from_raw_parts_mut(d.as_mut_ptr() as *mut f32, n_embed);
+                s.iter_mut().for_each(|dst| *dst = f32::NEG_INFINITY)
+            })
+        };
+
         Self {
             cm_last_x,
             tm_last_x,

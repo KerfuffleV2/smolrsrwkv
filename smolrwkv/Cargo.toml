@@ -9,7 +9,7 @@ resolver = "2"
 default = ["torch", "ggml"]
 torch = ["dep:repugnant-pickle"]
 simd = ["dep:simba"]
-ggml = ["dep:ggml", "dep:ggml-sys"]
+ggml = ["dep:rusty-ggml", "dep:ggml-sys-bleedingedge"]
 
 [dependencies]
 safetensors = { version = "0.3", default-features = false }
@@ -21,6 +21,7 @@ rayon = "1.7"
 half = "2.2"
 rand = "0.8"
 num-traits = "0.2"
+num-derive="0.3"
 tracing = "0.1"
 bytemuck = { version = "1", features = ["extern_crate_alloc"] }
 simba = { version = "0.8", features = ["wide"], optional = true }
@@ -31,12 +32,10 @@ tag = "v0.0.1"
 features = ["torch"]
 optional = true
 
-[dependencies.ggml]
+[dependencies.rusty-ggml]
 optional = true
-git = "https://github.com/rustformers/llama-rs"
-rev = "84656bedce38a6be8070e13506cb6c6245e7ef75"
+path = "../../rusty-ggml"
 
-[dependencies.ggml-sys]
+[dependencies.ggml-sys-bleedingedge]
 optional = true
-git = "https://github.com/rustformers/llama-rs"
-rev = "84656bedce38a6be8070e13506cb6c6245e7ef75"
+version = "=2304251821.0.0"

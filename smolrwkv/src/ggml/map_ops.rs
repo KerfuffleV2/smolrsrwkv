@@ -1,6 +1,6 @@
-use ggml::{Context, Tensor};
+use rusty_ggml::{dims::*, tensor::GgmlTensor as Tensor};
 
-#[cfg(feature = "simd")]
+#[cfg(all(feature = "simd", feature = "never_happening"))]
 // I don't notice a performance difference. :(
 mod ops_funs {
     use num_traits::FromPrimitive;
@@ -268,7 +268,7 @@ mod ops_funs {
             });
     }
 
-    pub unsafe extern "C" fn div_fun(
+    pub unsafe extern "C" fn scalar_div_fun(
         n: std::os::raw::c_int,
         dst: *mut f32,
         src0: *const f32,
@@ -290,26 +290,53 @@ mod ops_funs {
 
 use ops_funs::*;
 
-pub fn one_minus(ctx: &Context, tensor: &Tensor) -> Tensor {
-    unsafe { ctx.op_map_unary(tensor, one_minus_fun) }
+pub fn one_minus<const DIMS: usize, T: AsRef<Tensor<DIMS>>>(tensor: T) -> Tensor<DIMS>
+where
+    Dim<DIMS>: DimValid,
+{
+    tensor.as_ref().map_unary(one_minus_fun)
 }
 
-pub fn sigmoid(ctx: &Context, tensor: &Tensor) -> Tensor {
-    unsafe { ctx.op_map_unary(tensor, sigmoid_fun) }
+pub fn sigmoid<const DIMS: usize, T: AsRef<Tensor<DIMS>>>(tensor: T) -> Tensor<DIMS>
+where
+    Dim<DIMS>: DimValid,
+{
+    tensor.as_ref().map_unary(sigmoid_fun)
 }
 
-pub fn relu_squared(ctx: &Context, tensor: &Tensor) -> Tensor {
-    unsafe { ctx.op_map_unary(tensor, relu_squared_fun) }
+pub fn relu_squared<const DIMS: usize, T: AsRef<Tensor<DIMS>>>(tensor: T) -> Tensor<DIMS>
+where
+    Dim<DIMS>: DimValid,
+{
+    tensor.as_ref().map_unary(relu_squared_fun)
 }
 
-pub fn max(ctx: &Context, tensor1: &Tensor, tensor2: &Tensor) -> Tensor {
-    unsafe { ctx.op_map_binary(tensor1, tensor2, max_fun) }
+pub fn max<const DIMS: usize, T1: AsRef<Tensor<DIMS>>, T2: AsRef<Tensor<DIMS>>>(
+    tensor1: T1,
+    tensor2: T2,
+) -> Tensor<DIMS>
+where
+    Dim<DIMS>: DimValid,
+{
+    tensor1.as_ref().map_binary(tensor2, max_fun)
 }
 
-pub fn sub_exp(ctx: &Context, tensor1: &Tensor, tensor2: &Tensor) -> Tensor {
-    unsafe { ctx.op_map_binary(tensor1, tensor2, sub_exp_fun) }
+pub fn sub_exp<const DIMS: usize, T1: AsRef<Tensor<DIMS>>, T2: AsRef<Tensor<DIMS>>>(
+    tensor1: T1,
+    tensor2: T2,
+) -> Tensor<DIMS>
+where
+    Dim<DIMS>: DimValid,
+{
+    tensor1.as_ref().map_binary(tensor2, sub_exp_fun)
 }
 
-pub fn div(ctx: &Context, tensor1: &Tensor, tensor2: &Tensor) -> Tensor {
-    unsafe { ctx.op_map_binary(tensor1, tensor2, div_fun) }
+pub fn div_scalar<const DIMS: usize, T1: AsRef<Tensor<DIMS>>, T2: AsRef<Tensor<DIMS>>>(
+    tensor1: T1,
+    tensor2: T2,
+) -> Tensor<DIMS>
+where
+    Dim<DIMS>: DimValid,
+{
+    tensor1.as_ref().map_binary(tensor2, scalar_div_fun)
 }
