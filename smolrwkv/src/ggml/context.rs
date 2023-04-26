@@ -2,10 +2,7 @@ use anyhow::{anyhow, Result};
 use ndarray::{Array1, ArrayView1};
 use tokenizers::Tokenizer;
 
-use rusty_ggml::{
-    context::GgmlGraph,
-    tensor::{GgmlElementType as GT, GgmlTensor as Tensor},
-};
+use rusty_ggml::prelude::*;
 
 use super::model::{RWKVLayerState, RWKV};
 
@@ -18,9 +15,9 @@ pub struct RWKVContext {
     /// Probabilities from the last step (starts filled with zeros).
     pub last_probs: Array1<f32>,
     /// It's a 1d tensor with length 1 that contains the token ID.
-    pub token_tensor: Tensor<1>,
+    pub token_tensor: GTensor1,
     /// This is the base of the graph and also where the probs appear.
-    pub result_tensor: Tensor<1>,
+    pub result_tensor: GTensor1,
     /// The GGML computation graph.
     pub ggml_graph: GgmlGraph,
     /// The tokenizer.
@@ -31,7 +28,7 @@ impl RWKVContext {
     pub fn new(rwkv: RWKV, tokenizer: Tokenizer, eval_threads: usize) -> Self {
         let ctx = &rwkv.ctx;
 
-        let token_tensor = ctx.tensor(GT::I32, [1]);
+        let token_tensor = ctx.tensor(GType::I32, [1]);
         let mut initial_state = (0..rwkv.n_layers)
             .map(|_| RWKVLayerState::new(ctx, rwkv.n_embed))
             .collect::<Vec<_>>();

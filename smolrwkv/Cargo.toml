@@ -9,7 +9,7 @@ resolver = "2"
 default = ["torch", "ggml"]
 torch = ["dep:repugnant-pickle"]
 simd = ["dep:simba"]
-ggml = ["dep:rusty-ggml", "dep:ggml-sys-bleedingedge"]
+ggml = ["dep:rusty-ggml"]
 
 [dependencies]
 safetensors = { version = "0.3", default-features = false }
@@ -35,7 +35,3 @@ optional = true
 [dependencies.rusty-ggml]
 optional = true
 path = "../../rusty-ggml"
-
-[dependencies.ggml-sys-bleedingedge]
-optional = true
-version = "=2304251821.0.0"

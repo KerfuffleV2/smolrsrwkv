@@ -25,6 +25,11 @@ pub enum EvalType {
     GGMLf32,
 
     #[cfg(feature = "ggml")]
+    #[value(name = "ggmlq8_0")]
+    /// GGML-backed 8 bit quantized, method 1.
+    GGMLQ8_0,
+
+    #[cfg(feature = "ggml")]
     #[value(name = "ggmlq4_0")]
     /// GGML-backed 4 bit quantized, method 1. Poor quality.
     GGMLQ4_0,

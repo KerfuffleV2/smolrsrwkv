@@ -1,4 +1,4 @@
-use rusty_ggml::{dims::*, tensor::GgmlTensor as Tensor};
+use rusty_ggml::{dims::*, prelude::GTensor};
 
 #[cfg(all(feature = "simd", feature = "never_happening"))]
 // I don't notice a performance difference. :(
@@ -290,51 +290,51 @@ mod ops_funs {
 
 use ops_funs::*;
 
-pub fn one_minus<const DIMS: usize, T: AsRef<Tensor<DIMS>>>(tensor: T) -> Tensor<DIMS>
+pub fn one_minus<const DIMS: usize, T: AsRef<GTensor<DIMS>>>(tensor: T) -> GTensor<DIMS>
 where
     Dim<DIMS>: DimValid,
 {
     tensor.as_ref().map_unary(one_minus_fun)
 }
 
-pub fn sigmoid<const DIMS: usize, T: AsRef<Tensor<DIMS>>>(tensor: T) -> Tensor<DIMS>
+pub fn sigmoid<const DIMS: usize, T: AsRef<GTensor<DIMS>>>(tensor: T) -> GTensor<DIMS>
 where
     Dim<DIMS>: DimValid,
 {
     tensor.as_ref().map_unary(sigmoid_fun)
 }
 
-pub fn relu_squared<const DIMS: usize, T: AsRef<Tensor<DIMS>>>(tensor: T) -> Tensor<DIMS>
+pub fn relu_squared<const DIMS: usize, T: AsRef<GTensor<DIMS>>>(tensor: T) -> GTensor<DIMS>
 where
     Dim<DIMS>: DimValid,
 {
     tensor.as_ref().map_unary(relu_squared_fun)
 }
 
-pub fn max<const DIMS: usize, T1: AsRef<Tensor<DIMS>>, T2: AsRef<Tensor<DIMS>>>(
+pub fn max<const DIMS: usize, T1: AsRef<GTensor<DIMS>>, T2: AsRef<GTensor<DIMS>>>(
     tensor1: T1,
     tensor2: T2,
-) -> Tensor<DIMS>
+) -> GTensor<DIMS>
 where
     Dim<DIMS>: DimValid,
 {
     tensor1.as_ref().map_binary(tensor2, max_fun)
 }
 
-pub fn sub_exp<const DIMS: usize, T1: AsRef<Tensor<DIMS>>, T2: AsRef<Tensor<DIMS>>>(
+pub fn sub_exp<const DIMS: usize, T1: AsRef<GTensor<DIMS>>, T2: AsRef<GTensor<DIMS>>>(
     tensor1: T1,
     tensor2: T2,
-) -> Tensor<DIMS>
+) -> GTensor<DIMS>
 where
     Dim<DIMS>: DimValid,
 {
     tensor1.as_ref().map_binary(tensor2, sub_exp_fun)
 }
 
-pub fn div_scalar<const DIMS: usize, T1: AsRef<Tensor<DIMS>>, T2: AsRef<Tensor<DIMS>>>(
+pub fn div_scalar<const DIMS: usize, T1: AsRef<GTensor<DIMS>>, T2: AsRef<GTensor<DIMS>>>(
     tensor1: T1,
     tensor2: T2,
-) -> Tensor<DIMS>
+) -> GTensor<DIMS>
 where
     Dim<DIMS>: DimValid,
 {
