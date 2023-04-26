@@ -1,4 +1,4 @@
-use rusty_ggml::prelude::{GMulMat, GTensor1};
+use rusty_ggml::prelude::GTensor1;
 
 use super::{map_ops, model::*};
 
@@ -23,11 +23,11 @@ impl FeedForwardNetwork {
         let xk = self.time.mix_k.mix_ops(&x, &state.cm_last_x);
         let xr = self.time.mix_r.mix_ops(&x, &state.cm_last_x);
 
-        let r = map_ops::sigmoid(self.receptance_weight.mul_mat(xr));
-        let k = &map_ops::relu_squared(self.key_weight.mul_mat(xk));
+        let r = map_ops::sigmoid(&self.receptance_weight ^ xr);
+        let k = &map_ops::relu_squared(&self.key_weight ^ xk);
 
         state.cm_last_x.copy_from(x);
-        r * self.value_weight.mul_mat(k)
+        r * (&self.value_weight ^ k)
     }
 }
 
@@ -39,23 +39,23 @@ impl Attention {
         let xv = self.time.mix_v.mix_ops(&x, tm_last_x);
         let xr = self.time.mix_r.mix_ops(&x, tm_last_x);
 
-        let r = map_ops::sigmoid(self.receptance_weight.mul_mat(xr));
-        let k = &self.key_weight.mul_mat(xk);
-        let v = &self.value_weight.mul_mat(xv);
+        let r = map_ops::sigmoid(&self.receptance_weight ^ &xr);
+        let k = &self.key_weight ^ xk;
+        let v = &self.value_weight ^ xv;
 
         let (a, b) = {
-            let ww = &self.time.first + k;
+            let ww = &self.time.first + &k;
             let qq = map_ops::max(&ww, pp);
             let e1 = map_ops::sub_exp(pp, &qq);
             let e2 = map_ops::sub_exp(ww, qq);
-            let a = &e1 * aa + &e2 * v;
+            let a = &e1 * aa + &e2 * &v;
             let b = (e1 * bb) + e2;
             (a, b)
         };
 
         let (wkv, new_aa, new_bb, new_pp) = {
             let ww = pp + &self.time.decay;
-            let qq = map_ops::max(&ww, k);
+            let qq = map_ops::max(&ww, &k);
             let e1 = map_ops::sub_exp(ww, &qq);
             let e2 = map_ops::sub_exp(k, &qq);
             let wkv = a / b;
@@ -72,7 +72,7 @@ impl Attention {
         state.tm_bb.copy_from(new_bb);
         state.tm_pp.copy_from(new_pp);
 
-        self.output_weight.mul_mat(r * wkv)
+        &self.output_weight ^ (r * wkv)
     }
 }
 
@@ -94,6 +94,6 @@ impl RWKV {
             .fold(initial_x, |x, (lnum, layer)| {
                 layer.evaluate_layer_ops(&mut state[lnum], x)
             });
-        self.head_weight.mul_mat(self.ln_out.norm_ops(&x))
+        &self.head_weight ^ self.ln_out.norm_ops(&x)
     }
 }

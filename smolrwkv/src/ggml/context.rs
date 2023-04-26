@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, ensure, Result};
 use ndarray::{Array1, ArrayView1};
 use tokenizers::Tokenizer;
 
@@ -69,10 +69,7 @@ impl RWKVContext {
             .map_err(|e| anyhow!(e))?;
 
         for tid in toks.get_ids().iter() {
-            unsafe {
-                self.token_tensor
-                    .with_data_mut(|d| d.copy_from_slice(bytemuck::bytes_of(&(*tid as i32))));
-            }
+            self.token_tensor.set_i32_1d(0, *tid as i32);
             ctx.compute(&mut self.ggml_graph);
             if let Some(f) = &f {
                 self.tokenizer
@@ -81,16 +78,16 @@ impl RWKVContext {
                     .map_err(|e| anyhow!(e))?;
             }
         }
-        assert_eq!(self.result_tensor.shape()[0], self.last_probs.len());
-        // FIXME: Use ggml tensor manipulation methods?
-        assert_eq!(self.result_tensor.elements(), self.last_probs.len());
-        unsafe {
-            // FIXME: This could be safer.
-            self.result_tensor.with_data(|d| {
-                (d.as_ptr() as *const f32)
-                    .copy_to_nonoverlapping(self.last_probs.as_mut_ptr(), self.last_probs.len())
-            });
-        }
+        ensure!(
+            self.result_tensor.shape()[0] == self.last_probs.len()
+                && self.result_tensor.elements() == self.last_probs.len(),
+            "Unexpected shape for result tensor"
+        );
+        self.result_tensor.copy_to_slice_f32(
+            self.last_probs
+                .as_slice_mut()
+                .expect("Could get slice from last_probs?"),
+        );
         Ok(())
     }
 
@@ -111,21 +108,19 @@ impl RWKVContext {
             .decode(vec![tokid as u32], false)
             .map_err(|e| anyhow!(e))?;
 
-        unsafe {
-            self.token_tensor
-                .with_data_mut(|d| d.copy_from_slice(bytemuck::bytes_of(&(tokid as i32))));
-        }
+        self.token_tensor.set_i32_1d(0, tokid as i32);
 
         ctx.compute(&mut self.ggml_graph);
-        assert_eq!(self.result_tensor.shape()[0], self.last_probs.len());
-        // FIXME: Use ggml tensor manipulation methods?
-        unsafe {
-            // FIXME: This could be safer.
-            self.result_tensor.with_data(|d| {
-                (d.as_ptr() as *const f32)
-                    .copy_to_nonoverlapping(self.last_probs.as_mut_ptr(), self.last_probs.len())
-            });
-        }
+        ensure!(
+            self.result_tensor.shape()[0] == self.last_probs.len()
+                && self.result_tensor.elements() == self.last_probs.len(),
+            "Unexpected shape for result tensor"
+        );
+        self.result_tensor.copy_to_slice_f32(
+            self.last_probs
+                .as_slice_mut()
+                .expect("Could get slice from last_probs?"),
+        );
         Ok(Some(output))
     }
 }

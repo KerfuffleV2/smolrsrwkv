@@ -143,31 +143,20 @@ where
     let gtyp = ltensor.typ;
     let mut shape = [0; DIMS];
     shape.iter_mut().zip(shp.iter()).for_each(|(d, s)| *d = *s);
-    let mut t = bctx.ctx.tensor(gtyp, shape);
 
-    Ok(match (ltensor.typ, ltensor.data) {
-        (GType::F32, RWKVLoadedTensorData::Float32(buf)) => {
-            unsafe {
-                t.with_data_mut(|d| {
-                    d.as_mut()
-                        .copy_from_slice(bytemuck::cast_slice(buf.as_slice()))
-                });
-            }
-            t
-        }
-        (
-            GType::Q4_0 | GType::Q4_1 | GType::Q4_2 | GType::Q4_3 | GType::Q8_0,
-            RWKVLoadedTensorData::U8(buf),
-        ) => {
-            unsafe { t.with_data_mut(|d| d.copy_from_slice(buf.as_slice())) }
-            t
-        }
+    let mut t = bctx.ctx.tensor(gtyp, shape);
+    match (ltensor.typ, ltensor.data) {
+        (GType::F32, RWKVLoadedTensorData::Float32(buf)) => t.populate_f32(buf.as_slice()),
+        (typ, RWKVLoadedTensorData::U8(buf)) if typ.is_quantized() => unsafe {
+            t.populate_raw(buf.as_slice())
+        },
         _ => bail!(
             "Bad combination of loaded tensor type {:?} and data for {}",
             ltensor.typ,
             ltensor.name
         ),
-    })
+    }
+    Ok(t)
 }
 
 pub struct RWKVLoaderItemDefinition<T> {
@@ -268,13 +257,7 @@ impl From<(&GContext, Array1<ATy>)> for Tents<1> {
     fn from((ctx, arr): (&GContext, Array1<ATy>)) -> Self {
         let shp = arr.shape();
         let mut t = ctx.tensor(GT32, [shp[0]]);
-        unsafe {
-            t.with_data_mut(|d| {
-                d.copy_from_slice(bytemuck::cast_slice(
-                    arr.as_slice().expect("Impossible, can't get slice?"),
-                ))
-            });
-        }
+        t.populate_f32(arr.as_slice().expect("Impossible, can't get slice?"));
         Self(t)
     }
 }
@@ -284,13 +267,7 @@ impl From<(&GContext, Array2<ATy>)> for Tents<2> {
         let shp = arr.shape();
         // ??? NOTE: The order for shapes is reversed in GGML.
         let mut t = ctx.tensor(GT32, [shp[0], shp[1]]);
-        unsafe {
-            t.with_data_mut(|d| {
-                d.copy_from_slice(bytemuck::cast_slice(
-                    arr.as_slice().expect("Impossible, can't get slice?"),
-                ))
-            });
-        }
+        t.populate_f32(arr.as_slice().expect("Impossible, can't get slice?"));
         Self(t)
     }
 }

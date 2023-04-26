@@ -89,30 +89,17 @@ pub struct RWKVLayerState {
 
 impl RWKVLayerState {
     pub fn new(ctx: &GContext, n_embed: usize) -> Self {
-        let mut cm_last_x = ctx.tensor(GType::F32, [n_embed]);
-        let mut tm_last_x = ctx.tensor(GType::F32, [n_embed]);
-        let mut tm_aa = ctx.tensor(GType::F32, [n_embed]);
-        let mut tm_bb = ctx.tensor(GType::F32, [n_embed]);
-        let mut tm_pp = ctx.tensor(GType::F32, [n_embed]);
-
-        // FIXME: This is pretty nasty.
-        unsafe {
-            cm_last_x.with_data_mut(|d| d.iter_mut().for_each(|dst| *dst = 0));
-            tm_last_x.with_data_mut(|d| d.iter_mut().for_each(|dst| *dst = 0));
-            tm_aa.with_data_mut(|d| d.iter_mut().for_each(|dst| *dst = 0));
-            tm_bb.with_data_mut(|d| d.iter_mut().for_each(|dst| *dst = 0));
-            tm_pp.with_data_mut(|d| {
-                let s = std::slice::from_raw_parts_mut(d.as_mut_ptr() as *mut f32, n_embed);
-                s.iter_mut().for_each(|dst| *dst = f32::NEG_INFINITY)
-            })
-        };
-
+        let mut it = (0..5).map(|idx| {
+            let mut t = ctx.tensor(GType::F32, [n_embed]);
+            t.fill_f32(if idx != 4 { 0.0 } else { f32::NEG_INFINITY });
+            t
+        });
         Self {
-            cm_last_x,
-            tm_last_x,
-            tm_aa,
-            tm_bb,
-            tm_pp,
+            cm_last_x: it.next().unwrap(),
+            tm_last_x: it.next().unwrap(),
+            tm_aa: it.next().unwrap(),
+            tm_bb: it.next().unwrap(),
+            tm_pp: it.next().unwrap(),
         }
     }
 }
