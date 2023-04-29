@@ -46,11 +46,6 @@ pub enum EvalType {
     GGMLQ4_2,
 
     #[cfg(feature = "ggml")]
-    #[value(name = "ggmlq4_3")]
-    /// GGML-backed 4 bit quantized, method 4.
-    GGMLQ4_3,
-
-    #[cfg(feature = "ggml")]
     #[value(name = "ggmlq5_0")]
     /// GGML-backed 5 bit quantized, method 1.
     GGMLQ5_0,

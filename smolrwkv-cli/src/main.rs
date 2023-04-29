@@ -100,7 +100,6 @@ fn go() -> Result<()> {
         | args::EvalType::GGMLQ4_0
         | args::EvalType::GGMLQ4_1
         | args::EvalType::GGMLQ4_2
-        | args::EvalType::GGMLQ4_3
         | args::EvalType::GGMLQ5_0
         | args::EvalType::GGMLQ5_1 => {
             use smolrwkv::ggml::{
@@ -114,7 +113,6 @@ fn go() -> Result<()> {
                 args::EvalType::GGMLQ4_0 => ElementType::Q4_0,
                 args::EvalType::GGMLQ4_1 => ElementType::Q4_1,
                 args::EvalType::GGMLQ4_2 => ElementType::Q4_2,
-                args::EvalType::GGMLQ4_3 => ElementType::Q4_3,
                 args::EvalType::GGMLQ5_0 => ElementType::Q5_0,
                 args::EvalType::GGMLQ5_1 => ElementType::Q5_1,
                 _ => panic!("Impossible: Bad eval mode!"),
