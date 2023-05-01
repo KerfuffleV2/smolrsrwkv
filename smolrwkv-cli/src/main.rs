@@ -123,7 +123,7 @@ fn go() -> Result<()> {
                 (wtype, ltensors).try_into()?,
                 tokenizer,
                 args.max_eval_threads,
-            ))
+            )?)
         }
     };
 
@@ -189,7 +189,7 @@ fn go() -> Result<()> {
                 }
             }
             let etime = Instant::now();
-            let used_mem = context.rwkv.ctx.used_mem();
+            let used_mem = context.rwkv.ctx.used_mem()?;
             println!();
             info!(
                 "GGML memory used: {:.3}GiB",

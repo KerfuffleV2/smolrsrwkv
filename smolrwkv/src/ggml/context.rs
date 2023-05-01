@@ -19,16 +19,16 @@ pub struct RWKVContext {
     /// This is the base of the graph and also where the probs appear.
     pub result_tensor: GTensor1,
     /// The GGML computation graph.
-    pub ggml_graph: GgmlGraph,
+    pub ggml_graph: GGraph,
     /// The tokenizer.
     pub tokenizer: Tokenizer,
 }
 
 impl RWKVContext {
-    pub fn new(rwkv: RWKV, tokenizer: Tokenizer, eval_threads: usize) -> Self {
+    pub fn new(rwkv: RWKV, tokenizer: Tokenizer, eval_threads: usize) -> Result<Self> {
         let ctx = &rwkv.ctx;
 
-        let token_tensor = ctx.tensor(GType::I32, [1]);
+        let token_tensor = ctx.tensor(GType::I32, [1])?;
         let mut initial_state = (0..rwkv.n_layers)
             .map(|_| RWKVLayerState::new(ctx, rwkv.n_embed))
             .collect::<Vec<_>>();
@@ -36,17 +36,18 @@ impl RWKVContext {
         let initial_probs = Array1::zeros(rwkv.n_vocab);
         let rwkv_ops_graph = rwkv.evaluate_ops(&mut initial_state, token_tensor.clone());
 
-        let mut ggml_graph = GgmlGraph::new(eval_threads);
-        ggml_graph.build_forward_expand(&rwkv_ops_graph);
-        initial_state.iter().for_each(|s| {
-            ggml_graph.build_forward_expand(&s.tm_last_x);
-            ggml_graph.build_forward_expand(&s.cm_last_x);
-            ggml_graph.build_forward_expand(&s.tm_aa);
-            ggml_graph.build_forward_expand(&s.tm_bb);
-            ggml_graph.build_forward_expand(&s.tm_pp);
-        });
+        let mut ggml_graph = GGraph::new(eval_threads);
+        ggml_graph.build_forward_expand(&rwkv_ops_graph)?;
+        initial_state.iter().try_for_each(|s| {
+            ggml_graph.build_forward_expand(&s.tm_last_x)?;
+            ggml_graph.build_forward_expand(&s.cm_last_x)?;
+            ggml_graph.build_forward_expand(&s.tm_aa)?;
+            ggml_graph.build_forward_expand(&s.tm_bb)?;
+            ggml_graph.build_forward_expand(&s.tm_pp)?;
+            anyhow::Ok(())
+        })?;
 
-        Self {
+        Ok(Self {
             rwkv,
             state: initial_state,
             last_probs: initial_probs,
@@ -54,7 +55,7 @@ impl RWKVContext {
             result_tensor: rwkv_ops_graph,
             ggml_graph,
             tokenizer,
-        }
+        })
     }
 
     /// Feeds some text to the model. A closure can be specified here to allow
@@ -70,7 +71,7 @@ impl RWKVContext {
 
         for tid in toks.get_ids().iter() {
             self.token_tensor.set_i32_1d(0, *tid as i32);
-            ctx.compute(&mut self.ggml_graph);
+            ctx.compute(&mut self.ggml_graph)?;
             if let Some(f) = &f {
                 self.tokenizer
                     .decode(vec![*tid], false)
@@ -110,7 +111,7 @@ impl RWKVContext {
 
         self.token_tensor.set_i32_1d(0, tokid as i32);
 
-        ctx.compute(&mut self.ggml_graph);
+        ctx.compute(&mut self.ggml_graph)?;
         ensure!(
             self.result_tensor.shape()[0] == self.last_probs.len()
                 && self.result_tensor.elements() == self.last_probs.len(),

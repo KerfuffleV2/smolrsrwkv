@@ -90,7 +90,9 @@ pub struct RWKVLayerState {
 impl RWKVLayerState {
     pub fn new(ctx: &GContext, n_embed: usize) -> Self {
         let mut it = (0..5).map(|idx| {
-            let mut t = ctx.tensor(GType::F32, [n_embed]);
+            let mut t = ctx
+                .tensor(GType::F32, [n_embed])
+                .expect("Could not make tensor");
             t.fill_f32(if idx != 4 { 0.0 } else { f32::NEG_INFINITY });
             t
         });

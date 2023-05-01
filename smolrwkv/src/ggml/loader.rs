@@ -144,7 +144,7 @@ where
     let mut shape = [0; DIMS];
     shape.iter_mut().zip(shp.iter()).for_each(|(d, s)| *d = *s);
 
-    let mut t = bctx.ctx.tensor(gtyp, shape);
+    let mut t = bctx.ctx.tensor(gtyp, shape)?;
     match (ltensor.typ, ltensor.data) {
         (GType::F32, RWKVLoadedTensorData::Float32(buf)) => t.populate_f32(buf.as_slice()),
         (typ, RWKVLoadedTensorData::U8(buf)) if typ.is_quantized() => unsafe {
@@ -256,7 +256,7 @@ impl From<GTensor1> for Tents<1> {
 impl From<(&GContext, Array1<ATy>)> for Tents<1> {
     fn from((ctx, arr): (&GContext, Array1<ATy>)) -> Self {
         let shp = arr.shape();
-        let mut t = ctx.tensor(GT32, [shp[0]]);
+        let mut t = ctx.tensor(GT32, [shp[0]]).expect("Could not make tensor");
         t.populate_f32(arr.as_slice().expect("Impossible, can't get slice?"));
         Self(t)
     }
@@ -266,7 +266,9 @@ impl From<(&GContext, Array2<ATy>)> for Tents<2> {
     fn from((ctx, arr): (&GContext, Array2<ATy>)) -> Self {
         let shp = arr.shape();
         // ??? NOTE: The order for shapes is reversed in GGML.
-        let mut t = ctx.tensor(GT32, [shp[0], shp[1]]);
+        let mut t = ctx
+            .tensor(GT32, [shp[0], shp[1]])
+            .expect("Could not make tensor");
         t.populate_f32(arr.as_slice().expect("Impossible, can't get slice?"));
         Self(t)
     }
@@ -392,7 +394,7 @@ impl TryFrom<(GType, RWKVLoadMap<'_>)> for RWKV {
             ctx_size as f64 / (1024.0 * 1024.0 * 1024.0)
         );
 
-        let ctx = GgmlContextBuilder::new().mem_size(ctx_size).build();
+        let ctx = GContextBuilder::new().mem_size(ctx_size).build()?;
 
         // It's possible to just precompute the embeddings in advance.
         let emb = {
@@ -479,7 +481,7 @@ impl TryFrom<(GType, RWKVLoadMap<'_>)> for RWKV {
         };
         info!(
             "GGML context size after load: {:.3}GiB",
-            ctx.used_mem() as f64 / (1024.0 * 1024.0 * 1024.0)
+            ctx.used_mem()? as f64 / (1024.0 * 1024.0 * 1024.0)
         );
 
         let rwkv = RWKV {
