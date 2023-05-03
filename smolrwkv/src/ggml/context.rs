@@ -88,7 +88,7 @@ impl RWKVContext {
             self.last_probs
                 .as_slice_mut()
                 .expect("Could get slice from last_probs?"),
-        );
+        )?;
         Ok(())
     }
 
@@ -121,7 +121,7 @@ impl RWKVContext {
             self.last_probs
                 .as_slice_mut()
                 .expect("Could get slice from last_probs?"),
-        );
+        )?;
         Ok(Some(output))
     }
 }
