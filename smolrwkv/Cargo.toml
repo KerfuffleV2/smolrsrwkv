@@ -15,7 +15,7 @@ ggml = ["dep:rusty-ggml"]
 safetensors = { version = "0.3", default-features = false }
 tokenizers = { version = "0.13", default-features = false, features = ["onig"] }
 anyhow = "1"
-memmap2 = "0.5"
+memmap2 = "0.7"
 ndarray = { version = "0.15", features = ["rayon"] }
 rayon = "1.7"
 half = "2.2"
@@ -27,11 +27,13 @@ bytemuck = { version = "1", features = ["extern_crate_alloc"] }
 simba = { version = "0.8", features = ["wide"], optional = true }
 
 [dependencies.repugnant-pickle]
-git = "https://github.com/kerfufflev2/repugnant-pickle"
+git = "https://github.com/KerfuffleV2/repugnant-pickle"
 tag = "v0.0.1"
 features = ["torch"]
 optional = true
 
 [dependencies.rusty-ggml]
+git = "https://github.com/KerfuffleV2/rusty-ggml"
+tag = "0.0.6"
 optional = true
-path = "../../rusty-ggml"
+# path = "../../rusty-ggml"

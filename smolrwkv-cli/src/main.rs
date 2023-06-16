@@ -99,9 +99,13 @@ fn go() -> Result<()> {
         | args::EvalType::GGMLQ8_0
         | args::EvalType::GGMLQ4_0
         | args::EvalType::GGMLQ4_1
-        | args::EvalType::GGMLQ4_2
         | args::EvalType::GGMLQ5_0
-        | args::EvalType::GGMLQ5_1 => {
+        | args::EvalType::GGMLQ2_K
+        | args::EvalType::GGMLQ3_K
+        | args::EvalType::GGMLQ4_K
+        | args::EvalType::GGMLQ5_K
+        | args::EvalType::GGMLQ5_1
+        | args::EvalType::GGMLQ6_K => {
             use smolrwkv::ggml::{
                 context::RWKVContext,
                 loader::{load_rwkv, ElementType},
@@ -112,9 +116,13 @@ fn go() -> Result<()> {
                 args::EvalType::GGMLQ8_0 => ElementType::Q8_0,
                 args::EvalType::GGMLQ4_0 => ElementType::Q4_0,
                 args::EvalType::GGMLQ4_1 => ElementType::Q4_1,
-                args::EvalType::GGMLQ4_2 => ElementType::Q4_2,
                 args::EvalType::GGMLQ5_0 => ElementType::Q5_0,
                 args::EvalType::GGMLQ5_1 => ElementType::Q5_1,
+                args::EvalType::GGMLQ2_K => ElementType::Q2_K,
+                args::EvalType::GGMLQ3_K => ElementType::Q3_K,
+                args::EvalType::GGMLQ4_K => ElementType::Q4_K,
+                args::EvalType::GGMLQ5_K => ElementType::Q5_K,
+                args::EvalType::GGMLQ6_K => ElementType::Q6_K,
                 _ => panic!("Impossible: Bad eval mode!"),
             };
             info!("Backend type: GGML {wtype:?}");
