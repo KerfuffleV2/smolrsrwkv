@@ -9,6 +9,7 @@ const DEFAULT_MODEL: &str = "./RWKV-4-Pile-430M-20220808-8066.safetensors";
 /// Tokenizer definition file. See README.
 const DEFAULT_TOKENIZER: &str = "./20B_tokenizer.json";
 
+#[allow(non_camel_case_types)]
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum EvalType {
     #[value(name = "ndf32")]
@@ -25,15 +26,55 @@ pub enum EvalType {
     GGMLf32,
 
     #[cfg(feature = "ggml")]
+    #[value(name = "ggmlq8_0")]
+    /// GGML-backed 8 bit quantized, method 1.
+    GGMLQ8_0,
+
+    #[cfg(feature = "ggml")]
     #[value(name = "ggmlq4_0")]
     /// GGML-backed 4 bit quantized, method 1. Poor quality.
     GGMLQ4_0,
 
     #[cfg(feature = "ggml")]
     #[value(name = "ggmlq4_1")]
-    /// GGML-backed 4 bit quantized, method 2. Decenent quality,
+    /// GGML-backed 4 bit quantized, method 2. Decent quality,
     /// but slower (to load?)
     GGMLQ4_1,
+
+    #[cfg(feature = "ggml")]
+    #[value(name = "ggmlq5_0")]
+    /// GGML-backed 5 bit quantized, method 1.
+    GGMLQ5_0,
+
+    #[cfg(feature = "ggml")]
+    #[value(name = "ggmlq5_1")]
+    /// GGML-backed 5 bit quantized, method 2.
+    GGMLQ5_1,
+
+    #[cfg(feature = "ggml")]
+    #[value(name = "ggmlq2_k")]
+    /// GGML-backed k_quants 2 bit.
+    GGMLQ2_K,
+
+    #[cfg(feature = "ggml")]
+    #[value(name = "ggmlq3_k")]
+    /// GGML-backed k_quants 3 bit.
+    GGMLQ3_K,
+
+    #[cfg(feature = "ggml")]
+    #[value(name = "ggmlq4_k")]
+    /// GGML-backed k_quants 4 bit.
+    GGMLQ4_K,
+
+    #[cfg(feature = "ggml")]
+    #[value(name = "ggmlq5_k")]
+    /// GGML-backed k_quants 5 bit.
+    GGMLQ5_K,
+
+    #[cfg(feature = "ggml")]
+    #[value(name = "ggmlq6_k")]
+    /// GGML-backed k_quants 6 bit.
+    GGMLQ6_K,
 }
 
 #[derive(Clone, Debug, Parser)]

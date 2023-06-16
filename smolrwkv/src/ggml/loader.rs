@@ -8,7 +8,7 @@ use anyhow::{anyhow, bail, ensure, Error, Result};
 use ndarray::{Array1, Array2};
 use tracing::{info, instrument};
 
-use ggml::{Context, Tensor, Type as GT};
+use rusty_ggml::prelude::*;
 
 use super::model::*;
 use crate::{
@@ -16,31 +16,14 @@ use crate::{
     util::bf16_tensor_to_f32_buf,
 };
 
+pub type ElementType = GType;
+
 type ATy = f32;
-const GT32: ggml::Type = GT::F32;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum RwkvGgmlType {
-    Float32,
-    Q4_0,
-    Q4_1,
-}
-
-#[allow(clippy::from_over_into)]
-// Note: Only Into here because can't handle all GGML types.
-impl Into<ggml::Type> for RwkvGgmlType {
-    fn into(self) -> ggml::Type {
-        match self {
-            RwkvGgmlType::Float32 => GT::F32,
-            RwkvGgmlType::Q4_0 => GT::Q4_0,
-            RwkvGgmlType::Q4_1 => GT::Q4_1,
-        }
-    }
-}
+const GT32: GType = GType::F32;
 
 struct BuildCtx<'a, 'b> {
     lnum: Option<usize>,
-    ctx: &'a Context,
+    ctx: &'a GContext,
     lm: RWKVLoadMap<'b>,
 }
 
@@ -71,7 +54,7 @@ pub struct RWKVLoadedTensor<'a> {
     layer: Option<u32>,
     name: String,
     shape: [usize; 2],
-    typ: RwkvGgmlType,
+    typ: GType,
     data: RWKVLoadedTensorData<'a>,
 }
 
@@ -93,7 +76,7 @@ impl<'a> GenericLoader for RWKVLoader<'a> {
             })
         }
         match &itemdef.out_type {
-            RwkvGgmlType::Q4_0 | RwkvGgmlType::Q4_1 => {
+            _ if itemdef.out_type.is_quantized() => {
                 info!(
                     "Quantizing {}{}{:?} ({:?})",
                     itemdef
@@ -105,19 +88,18 @@ impl<'a> GenericLoader for RWKVLoader<'a> {
                     itemdef.shape,
                     itemdef.out_type
                 );
+                let mut quantizer = GQuantizer::default();
+                let _outlen = quantizer.quantize(itemdef.out_type, &itemdef.data)?.len();
+
                 Ok(RWKVLoadedTensor {
                     layer: itemdef.layer,
                     name: itemdef.name,
                     typ: itemdef.out_type,
-                    data: RWKVLoadedTensorData::U8(Cow::Owned(quantize_simple(
-                        &itemdef.shape,
-                        itemdef.out_type,
-                        itemdef.data,
-                    )?)),
+                    data: RWKVLoadedTensorData::U8(Cow::Owned(quantizer.buffer)),
                     shape: itemdef.shape,
                 })
             }
-            RwkvGgmlType::Float32 => {
+            GType::F32 => {
                 let data = RWKVLoadedTensorData::Float32(Cow::Owned(itemdef.data));
                 Ok(RWKVLoadedTensor {
                     layer: itemdef.layer,
@@ -127,6 +109,7 @@ impl<'a> GenericLoader for RWKVLoader<'a> {
                     shape: itemdef.shape,
                 })
             }
+            wut => bail!("Can't handle element type {wut:?}"),
         }
     }
 
@@ -136,38 +119,12 @@ impl<'a> GenericLoader for RWKVLoader<'a> {
     }
 }
 
-fn quantize_simple(shape: &[usize], wtype: RwkvGgmlType, buf: Vec<f32>) -> Result<Vec<u8>> {
-    let nels = buf.len();
-
-    // FIXME: Verify this is safe, but 32bit -> 4bit shouldn't take more than 8bits per element
-    // plus maybe an extra block. Riiight?
-    let mut qbuf = Vec::with_capacity(nels + ggml::blck_size(wtype.into()));
-    let mut hist = [0i64; 16];
-    let out_size = unsafe {
-        match wtype {
-            RwkvGgmlType::Q4_0 => ggml_sys::ggml_quantize_q4_0(
-                buf.as_ptr(),
-                qbuf.as_mut_ptr() as *mut std::ffi::c_void,
-                nels as i32,
-                shape[1] as i32,
-                hist.as_mut_ptr(),
-            ),
-            RwkvGgmlType::Q4_1 => ggml_sys::ggml_quantize_q4_1(
-                buf.as_ptr(),
-                qbuf.as_mut_ptr() as *mut std::ffi::c_void,
-                nels as i32,
-                shape[1] as i32,
-                hist.as_mut_ptr(),
-            ),
-            _ => bail!("Bad weight type!"),
-        }
-    };
-    unsafe { qbuf.set_len(out_size) };
-    Ok(qbuf)
-}
-
 /// Helper function for extracting a tensor from the HashMap by string key.
-fn gk(bctx: &mut BuildCtx<'_, '_>, dims: usize, key: &str) -> Result<Tensor> {
+fn gk<const DIMS: usize>(bctx: &mut BuildCtx<'_, '_>, key: &str) -> Result<GTensor<DIMS>>
+where
+    Dim<DIMS>: DimValid,
+    DimPair<DIMS, 4>: DimLt,
+{
     let ltensor = bctx
         .lm
         .remove(&(bctx.lnum.map(|i| i as u32), key.to_string()))
@@ -181,45 +138,32 @@ fn gk(bctx: &mut BuildCtx<'_, '_>, dims: usize, key: &str) -> Result<Tensor> {
         .copied()
         .filter(|i| *i != 1)
         .collect::<Vec<_>>();
-    ensure!(shp.len() == dims, "Unexpected shape for tensor {key}");
-    ensure!((1..=2).contains(&dims), "Unsupport dimensions for {key}");
-    let gtyp = ltensor.typ.into();
-    Ok(match (ltensor.typ, ltensor.data) {
-        (RwkvGgmlType::Float32, RWKVLoadedTensorData::Float32(buf)) => {
-            let t = if dims == 1 {
-                bctx.ctx.new_tensor_1d(gtyp, shp[0])
-            } else {
-                bctx.ctx.new_tensor_2d(gtyp, shp[1], shp[0])
-            };
-            unsafe {
-                t.write_data(bytemuck::cast_slice(buf.as_slice()));
-            }
-            t
-        }
-        (RwkvGgmlType::Q4_0 | RwkvGgmlType::Q4_1, RWKVLoadedTensorData::U8(buf)) => {
-            let t = if dims == 1 {
-                bctx.ctx.new_tensor_1d(gtyp, shp[0])
-            } else {
-                bctx.ctx.new_tensor_2d(gtyp, shp[1], shp[0])
-            };
-            unsafe {
-                t.write_data(buf.as_slice());
-            }
-            t
-        }
+    ensure!(shp.len() == DIMS, "Unexpected shape for tensor {key}");
+    ensure!((1..=2).contains(&DIMS), "Unsupport dimensions for {key}");
+    let gtyp = ltensor.typ;
+    let mut shape = [0; DIMS];
+    shape.iter_mut().zip(shp.iter()).for_each(|(d, s)| *d = *s);
+
+    let mut t = bctx.ctx.tensor(gtyp, shape)?;
+    match (ltensor.typ, ltensor.data) {
+        (GType::F32, RWKVLoadedTensorData::Float32(buf)) => t.populate_f32(buf.as_slice()),
+        (typ, RWKVLoadedTensorData::U8(buf)) if typ.is_quantized() => unsafe {
+            t.populate_raw(buf.as_slice())
+        },
         _ => bail!(
             "Bad combination of loaded tensor type {:?} and data for {}",
             ltensor.typ,
             ltensor.name
         ),
-    })
+    }
+    Ok(t)
 }
 
 pub struct RWKVLoaderItemDefinition<T> {
     layer: Option<u32>,
     name: String,
     shape: [usize; 2],
-    out_type: RwkvGgmlType,
+    out_type: GType,
     use_parallel: bool,
     data: T,
 }
@@ -227,8 +171,8 @@ pub struct RWKVLoaderItemDefinition<T> {
 // FIXME: Should be in an impl probably.
 pub fn load_rwkv(
     max_load_threads: usize,
-    atype: RwkvGgmlType,
-    wtype: RwkvGgmlType,
+    atype: GType,
+    wtype: GType,
     tdm: TensorDataMap<'_>,
 ) -> Result<RWKVLoadMap> {
     use crate::loader::TensorType;
@@ -301,37 +245,31 @@ pub fn load_rwkv(
 }
 
 #[repr(transparent)]
-pub struct Tents(Tensor);
+pub struct Tents<const DIMS: usize>(GTensor<DIMS>);
 
-impl From<Tensor> for Tents {
-    fn from(value: Tensor) -> Self {
+impl From<GTensor1> for Tents<1> {
+    fn from(value: GTensor1) -> Self {
         Self(value)
     }
 }
 
-impl From<(&Context, Array1<ATy>)> for Tents {
-    fn from((ctx, arr): (&Context, Array1<ATy>)) -> Self {
+impl From<(&GContext, Array1<ATy>)> for Tents<1> {
+    fn from((ctx, arr): (&GContext, Array1<ATy>)) -> Self {
         let shp = arr.shape();
-        let t = ctx.new_tensor_1d(GT32, shp[0]);
-        unsafe {
-            t.write_data(bytemuck::cast_slice(
-                arr.as_slice().expect("Impossible, can't get slice?"),
-            ));
-        }
+        let mut t = ctx.tensor(GT32, [shp[0]]).expect("Could not make tensor");
+        t.populate_f32(arr.as_slice().expect("Impossible, can't get slice?"));
         Self(t)
     }
 }
 
-impl From<(&Context, Array2<ATy>)> for Tents {
-    fn from((ctx, arr): (&Context, Array2<ATy>)) -> Self {
+impl From<(&GContext, Array2<ATy>)> for Tents<2> {
+    fn from((ctx, arr): (&GContext, Array2<ATy>)) -> Self {
         let shp = arr.shape();
-        // NOTE: The order for shapes is reversed in GGML.
-        let t = ctx.new_tensor_2d(GT32, shp[1], shp[0]);
-        unsafe {
-            t.write_data(bytemuck::cast_slice(
-                arr.as_slice().expect("Impossible, can't get slice?"),
-            ));
-        }
+        // ??? NOTE: The order for shapes is reversed in GGML.
+        let mut t = ctx
+            .tensor(GT32, [shp[0], shp[1]])
+            .expect("Could not make tensor");
+        t.populate_f32(arr.as_slice().expect("Impossible, can't get slice?"));
         Self(t)
     }
 }
@@ -342,8 +280,8 @@ impl TryFrom<(usize, &mut BuildCtx<'_, '_>)> for LayerNorm {
     #[instrument(skip_all, name = "convert_layer_norm", level = "DEBUG")]
     fn try_from((idx, bctx): (usize, &mut BuildCtx<'_, '_>)) -> Result<Self> {
         Ok(Self {
-            weight: gk(bctx, 1, &format!("ln{idx}.weight"))?,
-            bias: gk(bctx, 1, &format!("ln{idx}.bias"))?,
+            weight: gk(bctx, &format!("ln{idx}.weight"))?,
+            bias: gk(bctx, &format!("ln{idx}.bias"))?,
         })
     }
 }
@@ -354,11 +292,11 @@ impl TryFrom<&mut BuildCtx<'_, '_>> for AttTime {
     #[instrument(skip_all, err, name = "convert_attn_time_mix", level = "DEBUG")]
     fn try_from(bctx: &mut BuildCtx<'_, '_>) -> Result<Self> {
         Ok(Self {
-            first: gk(bctx, 1, "att.time_first")?,
-            decay: gk(bctx, 1, "att.time_decay")?,
-            mix_k: Mix(gk(bctx, 1, "att.time_mix_k")?),
-            mix_v: Mix(gk(bctx, 1, "att.time_mix_v")?),
-            mix_r: Mix(gk(bctx, 1, "att.time_mix_r")?),
+            first: gk(bctx, "att.time_first")?,
+            decay: gk(bctx, "att.time_decay")?,
+            mix_k: Mix(gk(bctx, "att.time_mix_k")?),
+            mix_v: Mix(gk(bctx, "att.time_mix_v")?),
+            mix_r: Mix(gk(bctx, "att.time_mix_r")?),
         })
     }
 }
@@ -369,10 +307,10 @@ impl TryFrom<&mut BuildCtx<'_, '_>> for Attention {
     #[instrument(skip_all, name = "convert_att", level = "DEBUG")]
     fn try_from(bctx: &mut BuildCtx<'_, '_>) -> Result<Self> {
         Ok(Self {
-            key_weight: gk(bctx, 2, "att.key.weight")?,
-            value_weight: gk(bctx, 2, "att.value.weight")?,
-            output_weight: gk(bctx, 2, "att.output.weight")?,
-            receptance_weight: gk(bctx, 2, "att.receptance.weight")?,
+            key_weight: gk(bctx, "att.key.weight")?,
+            value_weight: gk(bctx, "att.value.weight")?,
+            output_weight: gk(bctx, "att.output.weight")?,
+            receptance_weight: gk(bctx, "att.receptance.weight")?,
             time: AttTime::try_from(bctx)?,
         })
     }
@@ -384,8 +322,8 @@ impl TryFrom<&mut BuildCtx<'_, '_>> for FFNTime {
     #[instrument(skip_all, name = "convert_ffn_time_mix", level = "DEBUG")]
     fn try_from(bctx: &mut BuildCtx<'_, '_>) -> Result<Self> {
         Ok(Self {
-            mix_k: Mix(gk(bctx, 1, "ffn.time_mix_k")?),
-            mix_r: Mix(gk(bctx, 1, "ffn.time_mix_r")?),
+            mix_k: Mix(gk(bctx, "ffn.time_mix_k")?),
+            mix_r: Mix(gk(bctx, "ffn.time_mix_r")?),
         })
     }
 }
@@ -396,9 +334,9 @@ impl TryFrom<&mut BuildCtx<'_, '_>> for FeedForwardNetwork {
     #[instrument(skip_all, name = "convert_ffn", level = "DEBUG")]
     fn try_from(bctx: &mut BuildCtx<'_, '_>) -> Result<Self> {
         Ok(FeedForwardNetwork {
-            key_weight: gk(bctx, 2, "ffn.key.weight")?,
-            value_weight: gk(bctx, 2, "ffn.value.weight")?,
-            receptance_weight: gk(bctx, 2, "ffn.receptance.weight")?,
+            key_weight: gk(bctx, "ffn.key.weight")?,
+            value_weight: gk(bctx, "ffn.value.weight")?,
+            receptance_weight: gk(bctx, "ffn.receptance.weight")?,
             time: FFNTime::try_from(bctx)?,
         })
     }
@@ -418,11 +356,11 @@ impl TryFrom<&mut BuildCtx<'_, '_>> for RWKVLayer {
     }
 }
 
-impl TryFrom<(RwkvGgmlType, RWKVLoadMap<'_>)> for RWKV {
+impl TryFrom<(GType, RWKVLoadMap<'_>)> for RWKV {
     type Error = Error;
 
     #[instrument(skip_all, name = "load_model")]
-    fn try_from((wtype, mut tensors): (RwkvGgmlType, RWKVLoadMap<'_>)) -> Result<Self> {
+    fn try_from((wtype, mut tensors): (GType, RWKVLoadMap<'_>)) -> Result<Self> {
         info!("Discovering model structure.");
         let (n_layers, f32_size, quantized_size) =
             tensors
@@ -456,7 +394,7 @@ impl TryFrom<(RwkvGgmlType, RWKVLoadMap<'_>)> for RWKV {
             ctx_size as f64 / (1024.0 * 1024.0 * 1024.0)
         );
 
-        let ctx = ggml::Context::init(ctx_size);
+        let ctx = GContextBuilder::new().mem_size(ctx_size).build()?;
 
         // It's possible to just precompute the embeddings in advance.
         let emb = {
@@ -469,12 +407,12 @@ impl TryFrom<(RwkvGgmlType, RWKVLoadMap<'_>)> for RWKV {
             let ln0 = match (ln0weight, ln0bias) {
                 (
                     RWKVLoadedTensor {
-                        typ: RwkvGgmlType::Float32,
+                        typ: GType::F32,
                         data: RWKVLoadedTensorData::Float32(wdata),
                         ..
                     },
                     RWKVLoadedTensor {
-                        typ: RwkvGgmlType::Float32,
+                        typ: GType::F32,
                         data: RWKVLoadedTensorData::Float32(bdata),
                         ..
                     },
@@ -495,7 +433,7 @@ impl TryFrom<(RwkvGgmlType, RWKVLoadMap<'_>)> for RWKV {
             {
                 RWKVLoadedTensor {
                     shape,
-                    typ: RwkvGgmlType::Float32,
+                    typ: GType::F32,
                     data: RWKVLoadedTensorData::Float32(wdata),
                     ..
                 } if shape[1] != 1 => Array2::from_shape_vec(shape, wdata.into_owned())?,
@@ -523,7 +461,7 @@ impl TryFrom<(RwkvGgmlType, RWKVLoadMap<'_>)> for RWKV {
         let layers = (0..n_layers)
             .map(|lnum| {
                 bctx.lnum = Some(lnum);
-                if wtype == RwkvGgmlType::Float32 {
+                if wtype == GType::F32 {
                     print!(".");
                     stdout().flush().ok();
                 }
@@ -531,19 +469,19 @@ impl TryFrom<(RwkvGgmlType, RWKVLoadMap<'_>)> for RWKV {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        if wtype == RwkvGgmlType::Float32 {
+        if wtype == GType::F32 {
             println!();
         }
         bctx.lnum = None;
         info!("Building non-layer tensors.");
-        let head_weight = gk(&mut bctx, 2, "head.weight")?;
+        let head_weight = gk(&mut bctx, "head.weight")?;
         let ln_out = LayerNorm {
-            weight: gk(&mut bctx, 1, "ln_out.weight")?,
-            bias: gk(&mut bctx, 1, "ln_out.bias")?,
+            weight: gk(&mut bctx, "ln_out.weight")?,
+            bias: gk(&mut bctx, "ln_out.bias")?,
         };
         info!(
             "GGML context size after load: {:.3}GiB",
-            ctx.used_mem() as f64 / (1024.0 * 1024.0 * 1024.0)
+            ctx.used_mem()? as f64 / (1024.0 * 1024.0 * 1024.0)
         );
 
         let rwkv = RWKV {

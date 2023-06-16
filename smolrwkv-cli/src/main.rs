@@ -95,25 +95,43 @@ fn go() -> Result<()> {
             })?)
         }
         #[cfg(feature = "ggml")]
-        args::EvalType::GGMLf32 | args::EvalType::GGMLQ4_0 | args::EvalType::GGMLQ4_1 => {
+        args::EvalType::GGMLf32
+        | args::EvalType::GGMLQ8_0
+        | args::EvalType::GGMLQ4_0
+        | args::EvalType::GGMLQ4_1
+        | args::EvalType::GGMLQ5_0
+        | args::EvalType::GGMLQ2_K
+        | args::EvalType::GGMLQ3_K
+        | args::EvalType::GGMLQ4_K
+        | args::EvalType::GGMLQ5_K
+        | args::EvalType::GGMLQ5_1
+        | args::EvalType::GGMLQ6_K => {
             use smolrwkv::ggml::{
                 context::RWKVContext,
-                loader::{load_rwkv, RwkvGgmlType},
+                loader::{load_rwkv, ElementType},
             };
 
             let wtype = match args.eval_mode {
-                args::EvalType::GGMLf32 => RwkvGgmlType::Float32,
-                args::EvalType::GGMLQ4_0 => RwkvGgmlType::Q4_0,
-                args::EvalType::GGMLQ4_1 => RwkvGgmlType::Q4_1,
+                args::EvalType::GGMLf32 => ElementType::F32,
+                args::EvalType::GGMLQ8_0 => ElementType::Q8_0,
+                args::EvalType::GGMLQ4_0 => ElementType::Q4_0,
+                args::EvalType::GGMLQ4_1 => ElementType::Q4_1,
+                args::EvalType::GGMLQ5_0 => ElementType::Q5_0,
+                args::EvalType::GGMLQ5_1 => ElementType::Q5_1,
+                args::EvalType::GGMLQ2_K => ElementType::Q2_K,
+                args::EvalType::GGMLQ3_K => ElementType::Q3_K,
+                args::EvalType::GGMLQ4_K => ElementType::Q4_K,
+                args::EvalType::GGMLQ5_K => ElementType::Q5_K,
+                args::EvalType::GGMLQ6_K => ElementType::Q6_K,
                 _ => panic!("Impossible: Bad eval mode!"),
             };
             info!("Backend type: GGML {wtype:?}");
-            let ltensors = load_rwkv(args.max_load_threads, RwkvGgmlType::Float32, wtype, tdm)?;
+            let ltensors = load_rwkv(args.max_load_threads, ElementType::F32, wtype, tdm)?;
             Ctx::Ggml(RWKVContext::new(
                 (wtype, ltensors).try_into()?,
                 tokenizer,
                 args.max_eval_threads,
-            ))
+            )?)
         }
     };
 
@@ -179,7 +197,7 @@ fn go() -> Result<()> {
                 }
             }
             let etime = Instant::now();
-            let used_mem = context.rwkv.ctx.used_mem();
+            let used_mem = context.rwkv.ctx.used_mem()?;
             println!();
             info!(
                 "GGML memory used: {:.3}GiB",

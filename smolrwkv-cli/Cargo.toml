@@ -18,7 +18,7 @@ rand = "0.8"
 clap = { version = "4.2", features=["derive", "cargo"]}
 tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
 tracing = "0.1"
-memmap2 = "0.5"
+memmap2 = "0.7"
 # tracing-flame = "0.2"
 
 smolrwkv = { path = "../smolrwkv" }
