@@ -22,3 +22,7 @@ memmap2 = "0.7"
 # tracing-flame = "0.2"
 
 smolrwkv = { path = "../smolrwkv" }
+
+[dependencies.llm-samplers]
+git = "https://github.com/KerfuffleV2/llm-samplers"
+tag = "v0.0.2"
