@@ -124,61 +124,6 @@ pub fn bf16_tensor_to_f32_buf(tensor: &TensorData<'_>, buf: &mut Vec<f32>) {
     unsafe { buf.set_len(elcount) };
 }
 
-/// Magical stuff I don't understand too well. It takes the list of probabilities
-/// and chooses a reasonable tokenid based on that.
-#[instrument(level = "DEBUG", skip(rng), ret, fields(probs = ?probs.shape()))]
-pub fn sample_probs<T: ReqOps + num_traits::AsPrimitive<f32>>(
-    rng: &mut impl rand::Rng,
-    probs: &ArrayView1<T>,
-    forever: bool, // Never select EndOfDocument token.
-    temperature: f32,
-    top_p: f32,
-) -> usize {
-    use rand::distributions::{Distribution, WeightedError, WeightedIndex};
-    const EOT_TOKEN_ID: usize = 0;
-
-    let probs = softmax(probs);
-    let mut sorted_probs = probs.as_slice().unwrap().to_vec();
-
-    // FIXME: Don't use unwrap here.
-    sorted_probs.sort_by(|a, b| T::partial_cmp(a, b).unwrap().reverse());
-    let mut cumulative_probs = Vec::with_capacity(sorted_probs.len());
-    let _ = sorted_probs.iter().fold(T::zero(), |acc, i| {
-        let newcum = acc + *i;
-        cumulative_probs.push(newcum);
-        newcum
-    });
-    let cutoffidx = cumulative_probs
-        .iter()
-        .copied()
-        .enumerate()
-        .find(|(_, v)| v.as_() > top_p)
-        .map(|i| i.0)
-        .unwrap_or_default();
-    let cutoff = sorted_probs[cutoffidx].as_();
-    let mut probs = probs.map(|i| {
-        let i: f32 = i.as_();
-        if i < cutoff {
-            0.0
-        } else {
-            i
-        }
-    });
-    if forever {
-        probs[EOT_TOKEN_ID] = 0.0;
-    }
-    let probs = &probs / probs.sum();
-    let dist = match WeightedIndex::new(probs.iter().map(|val| val.powf(1.0 / temperature))) {
-        Ok(dist) => dist,
-        Err(WeightedError::AllWeightsZero) => {
-            // Sorry if you wanted tokens forever, but this is how it's got to be.
-            return 0;
-        }
-        e => e.expect("I didn't sign up for this! (Bad weight in generated probability list.)"),
-    };
-    dist.sample(rng)
-}
-
 #[instrument(level = "DEBUG", fields(x = ?x.shape()))]
 pub fn sigmoid<T: ReqOps>(x: Array1<T>) -> Array1<T> {
     let o = T::one();

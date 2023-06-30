@@ -1,4 +1,7 @@
-use std::time::Instant;
+use std::{
+    sync::{Arc, RwLock},
+    time::Instant,
+};
 
 use anyhow::{anyhow, Ok, Result};
 use clap::Parser;
@@ -13,7 +16,7 @@ use smolrwkv::{
     loader::TensorDataMap,
     quantized::model::TensorQ2,
     simple as S,
-    util::{mmap_file, run_threadlimited, sample_probs},
+    util::{mmap_file, run_threadlimited},
 };
 
 mod args;
@@ -55,12 +58,6 @@ fn go() -> Result<()> {
     let tokenizerfn = &args.tokenizer;
     let modelfn = &args.model;
     info!("Using configuration: {args:?}\n");
-
-    let mut rng: rand::rngs::StdRng = if let Some(seed) = &args.seed {
-        StdRng::seed_from_u64(*seed)
-    } else {
-        StdRng::from_entropy()
-    };
 
     info!("Loading tokenizer from: {tokenizerfn}");
     let tokenizer = Tokenizer::from_file(tokenizerfn).map_err(|e| anyhow!(e))?;
@@ -142,15 +139,42 @@ fn go() -> Result<()> {
 
     let max_tokens = args.max_tokens.unwrap_or(usize::MAX);
 
+    let last_tokens = Arc::new(RwLock::new(Vec::with_capacity(max_tokens.min(8192))));
+    let mut samplers = SamplerChain::new();
+    samplers
+        .push_sampler(SampleRepetition::new(1.1, 64, last_tokens.clone()))
+        .push_sampler(SampleFreqPresence::new(0.05, 0.1, 64, last_tokens.clone()))
+        .push_sampler(SampleTemperature::new(args.temperature))
+        .push_sampler(SampleFlatBias::new(if args.forever {
+            &[(0u32, f32::NEG_INFINITY)]
+        } else {
+            &[]
+        }))
+        .push_sampler(SampleMirostat1::new(
+            n_vocab,
+            5.0,
+            0.1,
+            60,
+            10.0,
+            Box::new(SyncRngBox::new(if let Some(seed) = &args.seed {
+                StdRng::seed_from_u64(*seed)
+            } else {
+                StdRng::from_entropy()
+            })),
+        ));
+
     let mut do_sample = |probs: &ArrayView1<FloatType>| -> Result<usize> {
-        Ok(sample_probs(
-            &mut rng,
-            probs,
-            args.forever,
-            args.temperature,
-            args.top_p,
-        ))
+        let mut logits = Logits::try_from_iter(probs.iter().copied())?;
+        let tid = logits
+            .sample_token(&mut samplers)?
+            .expect("No token sampled!?");
+        last_tokens
+            .write()
+            .expect("Failed to acquire last_tokens")
+            .push(tid);
+        Ok(tid as usize)
     };
+
     // FIXME: Duplicated code.
     // The solution isn't as simple as it may appear because the GGML types aren't Sync
     // which means thread limiting requires special handling.
@@ -187,51 +211,6 @@ fn go() -> Result<()> {
         }),
         #[cfg(feature = "ggml")]
         Ctx::Ggml(mut context) => {
-            let mut last_tokens = Vec::with_capacity(max_tokens);
-
-            let mut temp_sampler = SampleTemperature::new(args.temperature);
-            let mut bias_sampler = SampleFlatBias::new(if args.forever {
-                &[(0u32, f32::NEG_INFINITY)]
-            } else {
-                &[]
-            });
-            // let mut miro_sampler: SampleMirostat2<u32, f32, StdRng> = SampleMirostat2::new(
-            //     5.0,
-            //     0.1,
-            //     10.0,
-            //     Box::new(RngBox::new(if let Some(seed) = &args.seed {
-            //         StdRng::seed_from_u64(*seed)
-            //     } else {
-            //         StdRng::from_entropy()
-            //     })),
-            // );
-            let mut miro_sampler: SampleMirostat1<u32, f32, StdRng> = SampleMirostat1::new(
-                n_vocab,
-                5.0,
-                0.1,
-                60,
-                10.0,
-                Box::new(RngBox::new(if let Some(seed) = &args.seed {
-                    StdRng::seed_from_u64(*seed)
-                } else {
-                    StdRng::from_entropy()
-                })),
-            );
-            let mut do_sample = |probs: &ArrayView1<FloatType>| -> Result<usize> {
-                let mut logits = Logits::from(probs.iter().copied());
-                let mut freqpresence_sampler = SampleFreqPresence::new(0.05, 0.1, 64, &last_tokens);
-                let mut rep_sampler = SampleRepetition::new(1.1, 64, &last_tokens);
-                let tid = logits
-                    .sample(&mut rep_sampler)
-                    .sample(&mut freqpresence_sampler)
-                    .sample(&mut temp_sampler)
-                    .sample(&mut bias_sampler)
-                    .sample_token(&mut miro_sampler)
-                    .expect("Sampling failed!");
-                last_tokens.push(tid);
-                Ok(tid as usize)
-            };
-
             context.feed_prompt(args.prompt, Some(show_token))?;
 
             let mut tcount = 0;

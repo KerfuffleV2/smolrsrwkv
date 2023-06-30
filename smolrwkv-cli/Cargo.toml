@@ -24,5 +24,6 @@ memmap2 = "0.7"
 smolrwkv = { path = "../smolrwkv" }
 
 [dependencies.llm-samplers]
+# path = "../../llm-samplers"
 git = "https://github.com/KerfuffleV2/llm-samplers"
-tag = "v0.0.2"
+tag = "v0.0.3"
