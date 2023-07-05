@@ -26,4 +26,4 @@ smolrwkv = { path = "../smolrwkv" }
 [dependencies.llm-samplers]
 # path = "../../llm-samplers"
 git = "https://github.com/KerfuffleV2/llm-samplers"
-tag = "v0.0.3"
+tag = "v0.0.4"

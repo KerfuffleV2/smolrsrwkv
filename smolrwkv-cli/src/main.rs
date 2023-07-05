@@ -1,7 +1,4 @@
-use std::{
-    sync::{Arc, RwLock},
-    time::Instant,
-};
+use std::time::Instant;
 
 use anyhow::{anyhow, Ok, Result};
 use clap::Parser;
@@ -139,39 +136,30 @@ fn go() -> Result<()> {
 
     let max_tokens = args.max_tokens.unwrap_or(usize::MAX);
 
-    let last_tokens = Arc::new(RwLock::new(Vec::with_capacity(max_tokens.min(8192))));
-    let mut samplers = SamplerChain::new();
-    samplers
-        .push_sampler(SampleRepetition::new(1.1, 64, last_tokens.clone()))
-        .push_sampler(SampleFreqPresence::new(0.05, 0.1, 64, last_tokens.clone()))
-        .push_sampler(SampleTemperature::new(args.temperature))
-        .push_sampler(SampleFlatBias::new(if args.forever {
-            &[(0u32, f32::NEG_INFINITY)]
+    let mut sres = SimpleSamplerResources::new(
+        Some(Box::new(if let Some(seed) = &args.seed {
+            StdRng::seed_from_u64(*seed)
         } else {
-            &[]
-        }))
-        .push_sampler(SampleMirostat1::new(
-            n_vocab,
-            5.0,
-            0.1,
-            60,
-            10.0,
-            Box::new(SyncRngBox::new(if let Some(seed) = &args.seed {
-                StdRng::seed_from_u64(*seed)
-            } else {
-                StdRng::from_entropy()
-            })),
-        ));
+            StdRng::from_entropy()
+        })),
+        Some(Vec::with_capacity(max_tokens.min(8192))),
+    );
+    let mut samplers = SamplerChain::new();
+    if args.forever {
+        samplers += SampleFlatBias::new(&[(0u32, f32::NEG_INFINITY)]);
+    }
+    samplers = samplers
+        + SampleRepetition::default().penalty(1.15)
+        + SampleFreqPresence::default().presence(0.02).frequency(0.05)
+        + SampleTemperature::new(args.temperature)
+        + SampleMirostat1::new(n_vocab, 5.0, 0.1);
 
     let mut do_sample = |probs: &ArrayView1<FloatType>| -> Result<usize> {
         let mut logits = Logits::try_from_iter(probs.iter().copied())?;
         let tid = logits
-            .sample_token(&mut samplers)?
+            .sample_token(&mut sres, &mut samplers)?
             .expect("No token sampled!?");
-        last_tokens
-            .write()
-            .expect("Failed to acquire last_tokens")
-            .push(tid);
+        sres.with_last_tokens_mut(&mut |lt| lt.push(tid))?;
         Ok(tid as usize)
     };
 
