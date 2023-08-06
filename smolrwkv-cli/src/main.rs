@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::{ops::Deref, str::FromStr, time::Instant};
 
 use anyhow::{anyhow, Ok, Result};
 use clap::Parser;
@@ -19,7 +19,7 @@ use smolrwkv::{
 mod args;
 mod util;
 
-use args::Args;
+use args::{Args, ConfiguredSamplers};
 use util::{show_token, Ctx, FloatType};
 
 pub fn setup_logging() {
@@ -145,14 +145,40 @@ fn go() -> Result<()> {
         Some(Vec::with_capacity(max_tokens.min(8192))),
     );
     let mut samplers = SamplerChain::new();
+
     if args.forever {
-        samplers += SampleFlatBias::new(&[(0u32, f32::NEG_INFINITY)]);
+        samplers += SampleFlatBias::new([(0u32, f32::NEG_INFINITY)]);
     }
-    samplers = samplers
-        + SampleRepetition::default().penalty(1.15)
-        + SampleFreqPresence::default().presence(0.02).frequency(0.05)
-        + SampleTemperature::new(args.temperature)
-        + SampleMirostat1::new(n_vocab, 5.0, 0.1);
+
+    let mut sampler_options = args
+        .samplers
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| "/".to_string() + s)
+        .collect::<String>();
+    if sampler_options.contains("/mirostat1") {
+        sampler_options += &format!("/mirostat1:n_vocab={n_vocab}");
+    }
+    let configured_samplers = ConfiguredSamplers::from_str(&sampler_options)
+        .map_err(|e| anyhow!(e))?
+        .builder;
+    info!("Sampler settings: {:?}", configured_samplers.deref());
+    samplers += configured_samplers.into_chain();
+
+    // samplers = samplers
+    //     + SampleRepetition::default().penalty(1.15)
+    //     + SampleFreqPresence::default().presence(0.02).frequency(0.05)
+    //     + SampleSeqRepetition::new(0.15, 0.15, 3, 1, 2, 128)
+    //     + SampleSeqRepetition::new(0.15, 0.05, 8, 2, 3, 2048)
+    //     + SampleTemperature::new(args.temperature)
+    //     + SampleMirostat1::new(n_vocab, 5.0, 0.1);
+    // equivalent args:
+    // -s temperature:0.8/repetition:penalty=1.15
+    // -s freqpresence:pres=.02:freq=.05
+    // -s seqrepetition:flat=.15:stack=.15:min=3:tol=1:max=2:last=128
+    // -s seqrepetition:flat=.15:stack=.05:min=8:tol=2:max=3:last=2048
+    // -s mirostat1
 
     let mut do_sample = |probs: &ArrayView1<FloatType>| -> Result<usize> {
         let mut logits = Logits::try_from_iter(probs.iter().copied())?;
