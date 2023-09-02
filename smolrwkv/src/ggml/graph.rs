@@ -4,7 +4,7 @@ use super::{map_ops, model::*};
 
 impl LayerNorm {
     pub fn norm_ops<T: AsRef<GTensor1>>(&self, x: T) -> GTensor1 {
-        (x.as_ref().norm() * &self.weight) + &self.bias
+        (x.as_ref().norm(1e-5f32) * &self.weight) + &self.bias
     }
 }
 

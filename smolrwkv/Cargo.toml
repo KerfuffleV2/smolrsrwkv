@@ -21,7 +21,7 @@ rayon = "1.7"
 half = "2.2"
 rand = "0.8"
 num-traits = "0.2"
-num-derive="0.3"
+num-derive="0.4"
 tracing = "0.1"
 bytemuck = { version = "1", features = ["extern_crate_alloc"] }
 simba = { version = "0.8", features = ["wide"], optional = true }
@@ -33,7 +33,6 @@ features = ["torch"]
 optional = true
 
 [dependencies.rusty-ggml]
-git = "https://github.com/KerfuffleV2/rusty-ggml"
-tag = "0.0.6"
 optional = true
 # path = "../../rusty-ggml"
+version = "0.0.8"
